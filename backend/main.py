@@ -1,21 +1,22 @@
 from fastapi import FastAPI, HTTPException, status, Depends, Response, Cookie
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr #base model is pydantic library serves as base for creating data models.
+#base model widely used for definging structure and validation rules for request and response data in fastapi appliation.
 import datetime
 from datetime import datetime, timedelta, timezone # for utnow() replacement
-import jwt
-import bcrypt
-import secrets
-import os # for .env files
+import jwt # used to securely transmit info and authenticate users b/w app and service
+import bcrypt#to create hashing passwords.
+import secrets # AN object which contains sens.. info like token,..
+import os # for .env files , Manages computer hardware and software resources.
 import smtplib # for send email to reset password.
-from email.mime.text import MIMEText
+from email.mime.text import MIMEText  #MIME multi purpose internet mail extension
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv #for .env files
 import logging   # imported because we are facing problem with the error unable to see that is the typeerror e.preventdefault is not a function.
 logger = logging.getLogger("uvicorn.error")
-from fastapi import Request   # for same prevent default error.
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr  # when we see probl;em with pydantic like email.
+from fastapi import Request   # for same prevent default error.Incoming HTTP request received by server.
+from fastapi.responses import JSONResponse # paylaod returned by a web service from a  request.
+from pydantic import BaseModel, EmailStr  # when we see problem with pydantic like email.
 
 
 
@@ -28,8 +29,8 @@ origins = [
     #add other origins if needed
 
 ]
-app.add_middleware(
-    CORSMiddleware,
+app.add_middleware(    #CORS has same orgin policy
+    CORSMiddleware,#Cross orgin resource sharing used to give access or restrict resources on web server requested by web pages hosted by different domain.
     allow_origins = origins, # Allow specified origins
     allow_credentials = True,
     allow_methods = ["*"],  # ALlow all HTTP methods (GET, POST, etc..)
@@ -38,13 +39,13 @@ app.add_middleware(
 
 load_dotenv()
 # secret key and configuration for JWT( use a secure key in production)
-JWT_ALGORITHM = "HS256"
+JWT_ALGORITHM = "HS256"   # ensures the token issued by trusted party(Using a shared secret) and has not been changed suring transit.
 JWT_EXPIRATION_MINUTES = 60
 JWT_SECRET = os.getenv("SECRET_KEY", "your_default_jwt_secret_key")
 
-class ForgotPasswordRequest(BaseModel):
+class ForgotPasswordRequest(BaseModel):   #because to ensure structuring and validating incomming request data.
     email: EmailStr
-class ResendForgotPasswordRequest(BaseModel):
+class ResendForgotPasswordRequest(BaseModel): #basemodel helps to structure request body in a clear & consistent way.
     email: EmailStr
 
 
@@ -87,15 +88,17 @@ class ConfirmEmailRequest(BaseModel):
     token: str
 
 # Utility function to create a JWT token for authenticates users
-def create_jwt_token(user_email: str) -> str:
+def create_jwt_token(user_email: str) -> str:   # -> represents the tokn to be in string format
     expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRATION_MINUTES)
-    payload = {"sub": user_email, "exp": expire}
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    payload = {"sub": user_email, "exp": expire} #sub means subject, token will had this info
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM) # encoding into a string, jwt_secret id for tokens authenticity.
     return token
 @app.post("/api/register")
+#here user parameter represents the instance of the UserRegister pydantic model, to validates the structure of the incoming request data.
 async def register(user: UserRegister, db: Session = Depends(get_db)):
+#db parameter is SQLALchemy session object.dependency retrieves the db session using get_db function which manages and provides db connecton.
     #checking if user is available in db
-    db_user = db.query(User).filter(User.email == user.email).first()
+    db_user = db.query(User).filter(User.email == user.email).first() #frist gives the first amtch otherwise none.
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -139,7 +142,7 @@ def send_confirmation_email(recipient_email: str, token: str):
         body = (
             f"plese click the following link to confirm the email.\n\n{confirm_url}"
         )
-        msg= MIMEMultipart()
+        msg= MIMEMultipart() #composed of a mix of different types.
         msg["From"] = sender_email
         msg["to"] = recipient_email
         msg["Subject"] = subject
@@ -163,11 +166,13 @@ async def confirm_email(request: ConfirmEmailRequest, db: Session = Depends(get_
         password = payload.get("password")
         if not email or not password:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,detail="Invalid token")
-    except jwt.PyJWTError:
+    except jwt.PyJWTError:  #base class exception, used to handle errors related jwt during encoding or decoding
+        #WE use PyJWT error because it handlea all exceptions in a single block.
+        #signature error; cryptographic signature that verifies the authenticity of token.verifies sender and claimer should be same.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token Expired")
     
-    salt = bcrypt.gensalt()
-    hashed_password = bcrypt.hashpw(password.encode("utf-8"), salt)
+    salt = bcrypt.gensalt() # creating a random string of numbers added to password befor hasing.
+    hashed_password = bcrypt.hashpw(password.encode("utf-8"), salt) #hashing
     new_user = User(email=email, password=hashed_password.decode("utf-8"),is_confirmed=True)
     db.add(new_user)
     db.commit()
