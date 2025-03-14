@@ -22,10 +22,10 @@ from pydantic import BaseModel, EmailStr  # when we see problem with pydantic li
 
 app = FastAPI()
 
-frontend_url = os.getenv("FRONTEND_URL")
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3001")
 
 # Adjust the allowed origins to your frontend's URL
-origins = [frontend_url]
+origins = [frontend_url,"http://localhost:3001"]
     #add other origins if needed]
 app.add_middleware(    #CORS has same orgin policy
     CORSMiddleware,#Cross orgin resource sharing used to give access or restrict resources on web server requested by web pages hosted by different domain.
@@ -323,8 +323,8 @@ def send_reset_email(recipient_email: str, token: str):
         smtp_server = os.getenv("SMTP_SERVER", "SMTP_EXAMPLE.COM")
         smtp_port= int(os.getenv("SMTP_PORT",2525))
     # Construct reset URL and email change
-        frontend_url=os.getenv("FRONTEND_URL", " http://localhost:3000")
-        backend_url = os.getenv("BACKEND_URL","http://127.0.0.1:8000")
+        #frontend_url=os.getenv("FRONTEND_URL", " http://localhost:3000")
+        #backend_url = os.getenv("BACKEND_URL","http://127.0.0.1:8000")
         reset_url = f"{frontend_url}/reset_password?token={token}" 
         subject = "Password reset request"
         body = f" Click the following link to reset your password:\n \nif you did not request a password reset, please ignore this email."
