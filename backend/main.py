@@ -22,9 +22,10 @@ from pydantic import BaseModel, EmailStr  # when we see problem with pydantic li
 
 app = FastAPI()
 
+frontend_url = os.getenv("FRONTEND_URL")
 
 # Adjust the allowed origins to your frontend's URL
-origins = ["https://o1app.onrender.com","http://localhost:3000"]
+origins = [frontend_url]
     #add other origins if needed]
 app.add_middleware(    #CORS has same orgin policy
     CORSMiddleware,#Cross orgin resource sharing used to give access or restrict resources on web server requested by web pages hosted by different domain.
@@ -34,9 +35,9 @@ app.add_middleware(    #CORS has same orgin policy
     allow_methods = ["*"],  # ALlow all HTTP methods (GET, POST, etc..)
     allow_headers=["*"], 
 )
-
 load_dotenv()
-frontend_url = os.getenv("FRONTEND_URL")
+
+
 # secret key and configuration for JWT( use a secure key in production)
 JWT_ALGORITHM = "HS256"   # ensures the token issued by trusted party(Using a shared secret) and has not been changed suring transit.
 JWT_EXPIRATION_MINUTES = 60

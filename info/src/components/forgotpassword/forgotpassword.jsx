@@ -15,7 +15,7 @@ const ForgotPassword = ()=>{
     const handleSubmit = async(e) =>{
         e.preventDefault();
         try{
-            const response = await axios.post("${API_BASE_URL}/api/forgot_password",{email});
+            const response = await axios.post(`${API_BASE_URL}/api/forgot_password`,{email});
             const msg=response?.data?.msg || "Password resent link sent";
             setMessage(msg);
             setError('');
@@ -43,7 +43,7 @@ const ForgotPassword = ()=>{
     };
     const handelResend= async() =>{
         try{
-            const response = await axios.post("${API_BASE_URL}/api/resend_forgot_password",{email});
+            const response = await axios.post(`${API_BASE_URL}/api/resend_forgot_password`,{email});
             const msg=response?.data?.msg || "Password resent link sent";
             setMessage(msg);
             setError('');

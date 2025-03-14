@@ -11,7 +11,7 @@ const ResetPassword = () =>{
     const[confirmPassword, setConfirmPassword] = useState("");
     const[error, setError] = useState("");
     const[message, setMessage] = useState("");
-    const API_BASE_URL = Process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    const API_BASE_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 
     const passwordConstraints = [
         {
@@ -57,7 +57,7 @@ const ResetPassword = () =>{
         }
         try{
             //send post request to the backend to reset the password
-            const response = await axios.post("${API_BASE_URL}/api/reset_password",{token,new_password: newPassword,});
+            const response = await axios.post(`${API_BASE_URL}/api/reset_password`,{token,new_password: newPassword,});
             setMessage(response.data.msg);
             setError('');
             navigate("/")

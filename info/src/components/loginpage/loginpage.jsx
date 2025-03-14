@@ -109,7 +109,7 @@ const LoginPage = () => {
       try{
 
         //Make an API call to the register endpoint
-          const response = await axios.post('${API_BASE_URL}/api/register', { email,password});  //post to create or send new data
+          const response = await axios.post(`${API_BASE_URL}/api/register`, { email,password});  //post to create or send new data
           console.log('Sign up Succesfully:', response.data);
           alert("Please confirm the Email.");
 
@@ -130,7 +130,7 @@ const LoginPage = () => {
     else{
       //sign-in flow
       try{
-        const response =await axios.post('${API_BASE_URL}/api/login',{ email, password}, {withCredentials: true} );
+        const response =await axios.post(`${API_BASE_URL}/api/login`,{ email, password}, {withCredentials: true} );
         console.log("Login successful", response.data);
         if(remember && response.data.token){
           //save token to state and local storage
