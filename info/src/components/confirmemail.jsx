@@ -8,10 +8,12 @@ const ConfirmEmail = () =>{
     const navigate = useNavigate();
     const {search} = useLocation();
     const token = new URLSearchParams(search).get('token');
+    const API_BASE_URL = Process.env.BACKEND_URL || "http://127.0.0.1:8000";
+
 
     useEffect(() => {
         if(token){
-            axios.post('http://127.0.0.1:8000/api/confirm_email',{token}).then(response =>{
+            axios.post('${API_BASE_URL}/api/confirm_email',{token}).then(response =>{
                 setMessage(response.data.msg);
                 setError('');
                 setTimeout(()=>{navigate('/');}, 3000);

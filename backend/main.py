@@ -24,13 +24,11 @@ app = FastAPI()
 
 
 # Adjust the allowed origins to your frontend's URL
-origins = [
-    "http://localhost:3000"
-    #add other origins if needed
-
-]
+origins = ["https://o1app.onrender.com","http://localhost:3000"]
+    #add other origins if needed]
 app.add_middleware(    #CORS has same orgin policy
     CORSMiddleware,#Cross orgin resource sharing used to give access or restrict resources on web server requested by web pages hosted by different domain.
+   
     allow_origins = origins, # Allow specified origins
     allow_credentials = True,
     allow_methods = ["*"],  # ALlow all HTTP methods (GET, POST, etc..)
@@ -38,6 +36,7 @@ app.add_middleware(    #CORS has same orgin policy
 )
 
 load_dotenv()
+frontend_url = os.getenv("FRONTEND_URL")
 # secret key and configuration for JWT( use a secure key in production)
 JWT_ALGORITHM = "HS256"   # ensures the token issued by trusted party(Using a shared secret) and has not been changed suring transit.
 JWT_EXPIRATION_MINUTES = 60
@@ -137,7 +136,7 @@ def send_confirmation_email(recipient_email: str, token: str):
         smtp_port = int(os.getenv("SMTP_PORT", 2525))
 
         #construct the confirmation url
-        confirm_url = f"http://localhost:3000/confirm_email?token={token}"
+        confirm_url = f"{frontend_url}/confirm_email?token={token}"
         subject = "Email confirmation"
         body = (
             f"plese click the following link to confirm the email.\n\n{confirm_url}"
@@ -324,7 +323,7 @@ def send_reset_email(recipient_email: str, token: str):
         smtp_port= int(os.getenv("SMTP_PORT",2525))
     # Construct reset URL and email change
         frontend_url=os.getenv("FRONTEND_URL", " http://localhost:3000")
-        backend_url = "http://127.0.0.1:8000"
+        backend_url = os.getenv("BACKEND_URL","http://127.0.0.1:8000")
         reset_url = f"{frontend_url}/reset_password?token={token}" 
         subject = "Password reset request"
         body = f" Click the following link to reset your password:\n \nif you did not request a password reset, please ignore this email."
@@ -355,7 +354,8 @@ def send_reset_email(recipient_email: str, token: str):
     
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    port = int(os.environ.get("PORT",8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
 
 
 

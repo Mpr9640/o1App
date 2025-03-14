@@ -10,11 +10,12 @@ const ForgotPassword = ()=>{
     const navigate = useNavigate();
     const[showResend, setShowResend]=useState(false)
     const[showSend, setShowSend]=useState(true)
+    const API_BASE_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
 
     const handleSubmit = async(e) =>{
         e.preventDefault();
         try{
-            const response = await axios.post("http://127.0.0.1:8000/api/forgot_password",{email});
+            const response = await axios.post("${API_BASE_URL}/api/forgot_password",{email});
             const msg=response?.data?.msg || "Password resent link sent";
             setMessage(msg);
             setError('');
@@ -42,7 +43,7 @@ const ForgotPassword = ()=>{
     };
     const handelResend= async() =>{
         try{
-            const response = await axios.post("http://127.0.0.1:8000/api/resend_forgot_password",{email});
+            const response = await axios.post("${API_BASE_URL}/api/resend_forgot_password",{email});
             const msg=response?.data?.msg || "Password resent link sent";
             setMessage(msg);
             setError('');

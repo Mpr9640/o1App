@@ -8,6 +8,7 @@ const HomePage = () =>{
     const navigate = useNavigate();
     //Syntax called as object destructing used to extract the user properties provided by the useContext(AuthContext).
     const { user, logout} = useContext(AuthContext); //use usecontext hook to access values provided by the AuthContext.
+    const API_BASE_URL = Process.env.BACKEND_URL || "http://127.0.0.1:8000";
 
 
     const handleLogout = async()=>{
