@@ -15,54 +15,26 @@ const HomePage = () =>{
         await logout;
         navigate('/');
     };
-    const handleImportPhoto = (event)=>{
-        const file = event.target.files[0];
-        if(file){
-            alert('Selected file: ${file.name}');
-            //you can process the image here means uploadign it into the server.
-        }
-
+    
+    const handleprofile = async() =>{
+        navigate('/profile');
     };
 
-    const handleTakePhoto=()=>{
-        navigate('/camera'); //Redirected to camera page.
-    };
-
-    const handleRecordedAudio = () =>{
-        navigate('/audio');
-    }
-    /*const handleAudioUpload=(e)=>{
-        if(file){
-            alert('Selected file: ${file.name}');
-        }
-    }; */
 
     return(
-    <div>
-        <div className={styles.logout}>
-            <button onClick={handleLogout}>Logout</button>
+        <div>
+            <div className={styles.logout}>
+                <button onClick={handleLogout}>Logout</button>
 
-        </div>
-        <div className={styles.homepage}>
-            <h1>Welcome to homepage</h1>
-            <div className = {styles.photoimport}>
-                <label htmlFor='uploadphoto'>
-                    <input type="file" accept='image/*' id="uploadphoto" style={{display:'none'}} onChange={handleImportPhoto}/>
-
-
-                </label>
-                <button>Import Photo</button>
             </div>
-            <div className={styles.takephoto}>
-                <button onClick={handleTakePhoto}>Take Photo</button>
-            </div>
-            <div className={styles.recordaudio}>
-                <button onClick={handleRecordedAudio}>Record/Upload Audio</button>
+            <div className = {styles.profile}>
+                <button onClick = {handleprofile}>Profile</button>
             </div>
 
         </div>
 
-    </div>
+
+        
         
     );
 
