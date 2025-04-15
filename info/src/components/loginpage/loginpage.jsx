@@ -1,10 +1,10 @@
 // src/components/loginpage/loginpage.jsx
 import React from 'react';
 import styles from './loginpage.module.css';
-import {useState} from 'react';
+import {useState, useContext} from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from "axios";
-axios.defaults.withCredentials = true;  /*used to share credentials to cookies*/
+import apiClient from '../../axios.js';
 
 
 const LoginPage = () => {
@@ -16,14 +16,14 @@ const LoginPage = () => {
   const[confirmPassword, setConfirmPassword] = useState('');
   const[confirmPasswordError, setConfirmPasswordError]=useState('');
   const[showPassword, setShowPassword]=useState(false);
-  const[remember, setRemember] = useState(false);
-  const[rememberToken, setRememberToken]=useState(null);
+
   const[showConstraints, setShowConstraints] = useState(false);
+
   const navigate = useNavigate();
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s]+$/;
   const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
-  const API_BASE_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+  const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 
   const passwordConstraints = [
     {
@@ -56,6 +56,8 @@ const LoginPage = () => {
       setShowConstraints(false);},100);
  
   };
+  
+
   
   const handleEmailChange = (e) =>{
     const value = e.target.value;
@@ -130,14 +132,8 @@ const LoginPage = () => {
     else{
       //sign-in flow
       try{
-        const response =await axios.post(`${API_BASE_URL}/api/login`,{ email, password}, {withCredentials: true} );
+        const response =await apiClient.post('/api/login',{ email, password},{withCredentials: true});
         console.log("Login successful", response.data);
-        if(remember && response.data.token){
-          //save token to state and local storage
-          setRememberToken(response.data.token);
-          
-        }
-        //alert('LogIn Successful');
         navigate("/home");
       }
       catch(error){
@@ -146,8 +142,7 @@ const LoginPage = () => {
           alert("Please confirm the email");
         }
         else{
-          /*console.error("Login failed:", error);
-          alert("Invalid Credentials");*/
+
           alert(errorMessage);
         }
 
@@ -183,12 +178,7 @@ const LoginPage = () => {
               {passwordError && <p className={styles.error}>{passwordError}</p>}
 
             </div>
-            <div className ={styles.rememberme}>
-              <label>
-                <input type = "checkbox" checked = {remember} onChange = {(e) => setRemember(e.target.checked)}/>
-                Remember Me
-              </label>
-            </div>
+
             <div className={styles.forgotpassword}>
               <button type="button" onClick={handleForgotPassword}>Forgot Password</button>
             </div>
@@ -202,6 +192,7 @@ const LoginPage = () => {
 
 
           </form>
+
           </>
         )}
       </div>
@@ -268,9 +259,50 @@ const LoginPage = () => {
         }
       
       </div>
-      {/* Skip Button */}
+  
 
     </div>
   );
 }
 export default LoginPage;
+
+/* comments
+
+        if(response.data.user){
+          console.log("Token set in state")
+          setRememberToken(response.data.user)
+        
+        if(response.data.token){
+          const expiresIn = 3600;
+          const expirationTime = Date.now() + Number(expiresIn)* 1000;
+          localStorage.setItem("authToken",response.data.token);
+          localStorage.setItem("authTokenExpiry", expirationTime);
+          handleSuccessfulLogin();
+          console.log("Token set in local storage");
+
+        }
+        alert('LogIn Successful'); */
+
+        /*<div className = {styles.actionbuttons}>
+            <button type = "button" onClick={login}>Sign In With Google</button>
+        </div> */
+
+        /*
+                    <div className ={styles.rememberme}>
+              <label>
+                <input type = "checkbox" checked = {remember} onChange = {(e) => setRemember(e.target.checked)}/>
+                Remember Me
+              </label>
+            </div> */
+            //axios.defaults.withCredentials = true;  /*used to share credentials to cookies*/
+        /* global chrome */ //Adding a getComputedStyle;lobal declaration for chrome */
+          /*function handleSuccessfulLogin(){
+    window.dispatchEvent(new Event('tokenAvailable',{detail:{token:'Your token is here'}}));
+  }*/
+  //const[remember, setRemember] = useState(false);
+  //const[rememberToken, setRememberToken]=useState(null);
+  //import { AuthContext } from "../../authcontext";
+  //const{login} = useContext(AuthContext);
+            /*console.error("Login failed:", error);
+          alert("Invalid Credentials");*/
+              {/* Skip Button */}

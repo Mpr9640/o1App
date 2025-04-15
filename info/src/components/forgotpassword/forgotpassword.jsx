@@ -10,7 +10,7 @@ const ForgotPassword = ()=>{
     const navigate = useNavigate();
     const[showResend, setShowResend]=useState(false)
     const[showSend, setShowSend]=useState(true)
-    const API_BASE_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 
     const handleSubmit = async(e) =>{
         e.preventDefault();

@@ -8,7 +8,7 @@ const ConfirmEmail = () =>{
     const navigate = useNavigate();
     const {search} = useLocation();
     const token = new URLSearchParams(search).get('token');
-    const API_BASE_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 
 
     useEffect(() => {

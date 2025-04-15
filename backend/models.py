@@ -19,30 +19,29 @@ class User(Base):  # base is typically a declarative base class in SQLALchemy us
     is_confirmed = Column(Boolean, default=False )
 class Candidate(Base):
     __tablename__ = "candidates"
-    Id = Column(Integer, primary_key = True, index = True)
-    FirstName = Column(String, nullable=False)
-    MiddleName = Column(String, nullable=True)
-    LastName = Column(String, nullable=False)
-    FullName= Column(String, nullable=False)
-    Email= Column(String, nullable=False)
-    PhoneNumber = Column(String(14), nullable=False)
-    DateOfBirth = Column(String, nullable=False)
-    Degree = Column(String, nullable=False)
-    Major = Column(String, nullable=False)
-    School = Column(String, nullable=False)
-    StartDate = Column(Date, nullable=False)
-    EndDate = Column(Date, nullable=False)
-    CGPA = Column(Numeric(3,2), nullable=False)
-    Skills = Column(String, nullable=False)
-    CompanyName = Column(String, nullable=False)
-    JobName = Column(String, nullable=False)
-    Description = Column(String, nullable=False)
-    JobTittles = Column(String, nullable=False)
+    
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True, index=True)
+    first_name = Column(String, nullable=False)
+    middle_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=False)
+    full_name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    phone_number = Column(String(14), nullable=False)
+    date_of_birth = Column(Date, nullable=False)
+    degree = Column(String, nullable=False)
+    major = Column(String, nullable=False)
+    school = Column(String, nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    cgpa = Column(Numeric(3, 2), nullable=False)
+    skills = Column(String, nullable=False)
+    company_name = Column(String, nullable=False)
+    job_name = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+    job_titles = Column(String, nullable=False)  # corrected spelling
 
-    #Link candidate information to a user account
-    UserId = Column(Integer, ForeignKey("users.id"),nullable=False)
-
+    # Link candidate information to a user account
     user = relationship("User")
 
 def __repr__(self):
-    return f"<Candidate(FullName={self.fullName}, email={self.email})>"
+    return f"<Candidate(FullName={self.FullName}, Email={self.Email})>"

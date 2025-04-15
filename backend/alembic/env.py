@@ -15,13 +15,17 @@ from alembic import context
 
 
 config = context.config
-config.set_main_option("sqlalchemy.url","postgresql://postgres:9640715869@localhost:9640/app_db")
+
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+db_url = os.getenv("DATABASE_URL")
+if not db_url:
+    raise RuntimeError("DBURL not in env.")
+config.set_main_option("sqlalchemy.url",db_url)
 # add your model's MetaData object here
 # for 'autogenerate' support
 # from myapp import mymodel

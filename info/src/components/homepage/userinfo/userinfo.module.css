@@ -1,0 +1,49 @@
+
+*{
+    box-sizing: border-box;
+}
+body{
+    position: relative;
+    width: 100%;
+
+}
+.candidateprofile{
+    width: 80%;
+    border: 1px solid black;
+    border-radius: 8px;
+    position: absolute;
+    top: 10px;
+    left: 10%;
+}
+
+.candidateprofile form{
+    padding: 20px;
+    display: flex;
+    flex-direction: column; 
+    gap: 10px;
+
+}
+.candidateprofile label{
+    margin-right: 10px;
+}
+.candidateprofile input, .candidateprofile textarea{
+    padding: 10px;
+    margin-top: 5px;
+    border: 1px solid #ccc;
+    font-size: 1rem;
+}
+/* Button styling */
+.candidateprofile button{
+    padding: 0.75rem;
+    border: none;
+    background-color: #007BFF;
+    color: #fff;
+    font-size: 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    align-self: flex-start;
+}
+.candidateprofile button:hover{
+    background-color: #0056b3;
+}
+

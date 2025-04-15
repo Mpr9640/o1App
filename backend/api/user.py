@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Response, Cookie
+from fastapi import APIRouter, HTTPException, status, Depends, Response, Cookie, Request
 from pydantic import BaseModel, EmailStr #base model is pydantic library serves as base for creating data models.
 #base model widely used for definging structure and validation rules for request and response data in fastapi appliation.
 import datetime
@@ -22,18 +22,20 @@ from db import SessionLocal,engine
 from models import User
 from db import get_db
 from dependencies import create_jwt_token, get_current_user
-
+from dotenv import load_dotenv
+load_dotenv
 
 router = APIRouter()
-
-frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3001")
+frontend_url = os.getenv('FRONTEND_URL',"http://localhost:3000")
 
 
 
 # secret key and configuration for JWT( use a secure key in production)
 JWT_ALGORITHM = "HS256"   # ensures the token issued by trusted party(Using a shared secret) and has not been changed suring transit.
-JWT_EXPIRATION_MINUTES = 60
+JWT_EXPIRATION_MINUTES = 15
+REFRESH_TOKEN_EXPIRATION_MINUTES = 60*24*7
 JWT_SECRET = os.getenv("SECRET_KEY", "your_default_jwt_secret_key")
+host=os.getenv("HOST","localhost")
 
 class ForgotPasswordRequest(BaseModel):   #because to ensure structuring and validating incomming request data.
     email: EmailStr
@@ -54,6 +56,7 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+   
 class ConfirmEmailRequest(BaseModel):
     token: str
 
@@ -65,7 +68,7 @@ class ResetPasswordRequest(BaseModel): # fro resetpassword
 
 @router.post("/register")
 #here user parameter represents the instance of the UserRegister pydantic model, to validates the structure of the incoming request data.
-async def register(user: UserRegister, db: Session = Depends(get_db)):
+async def register(user: UserRegister,db: Session = Depends(get_db)):
 #db parameter is SQLALchemy session object.dependency retrieves the db session using get_db function which manages and provides db connecton.
     #checking if user is available in db
     db_user = db.query(User).filter(User.email == user.email).first() #frist gives the first amtch otherwise none.
@@ -107,6 +110,7 @@ def send_confirmation_email(recipient_email: str, token: str):
         smtp_port = int(os.getenv("SMTP_PORT", 2525))
 
         #construct the confirmation url
+        #base_url = str(request.base_url)
         confirm_url = f"{frontend_url}/confirm_email?token={token}"
         subject = "Email confirmation"
         body = (
@@ -176,38 +180,64 @@ async def login(user: UserLogin, response: Response, db: Session = Depends(get_d
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="invalid credentials"
         )
-    token = create_jwt_token(db_user.id,db_user.email)
+    access_token = create_jwt_token(db_user.id,db_user.email,JWT_EXPIRATION_MINUTES)
+    refresh_token = create_jwt_token(db_user.id,db_user.email,REFRESH_TOKEN_EXPIRATION_MINUTES)
+    #decide cookie persistance based on remember me flag
     # set an HTTP only cookie with the token
+   
     response.set_cookie(
-        key="token",
-        value=token,
+        key="access_token",
+        value=access_token,
         httponly=True,
-        secure=True,
+        secure=False,
         samesite="lax",  #"none", which is not used to accept for only samw port and domain.
-        max_age=JWT_EXPIRATION_MINUTES*60
-
+        max_age= JWT_EXPIRATION_MINUTES*60,
     )
-    return {"token": token, "user": {"email": user.email}}
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=REFRESH_TOKEN_EXPIRATION_MINUTES*60,
+    )
+    print("Login Cookies are maded")
+    return {"token":{"access_token":access_token,"refresh_token":refresh_token}, "user": {"email": user.email}}
 
-# to validate the cookie and returns the user's session details.
-@router.get("/me")
-async def get_current_user(db: Session = Depends(get_db), token: str = Cookie(None)):
-    if token is None:
-       raise HTTPException(status_code=401, detail= "Not authenticated")
+@router.post('/refresh')
+async def refresh_token(response: Response, refresh_token: str = Cookie(None)):
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Refresh token is Missing',
+        )
     try:
-       payload = jwt. decode(token, JWT_SECRET, algorithms = [JWT_ALGORITHM])
-       email = payload.get("sub")
-       if email is None:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        #Decoding and verifying the token
+         payload=jwt.decode(refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+         new_access_token = create_jwt_token(
+             user_id=payload['user_id'],
+             user_email=payload['sub'],
+             expires_in_minutes=JWT_EXPIRATION_MINUTES,
+         )
+         #SET THE NEW ACCESS TOKEN AS COOKIE
+         response.set_cookie(
+             key='access_token',
+             value=new_access_token,
+             httponly=True,
+             samesite='lax',
+             max_age=JWT_EXPIRATION_MINUTES*60,
+         )
+         return{"access_token": new_access_token}
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.PyJWTError:
-       raise HTTPException(status_code=401,detail = "Invalid token")
-    db_user = db.query(User).filter(User.email == email).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"email": db_user.email} 
-
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token expired",
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
 
 @router.post("/forgot_password")
 async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
@@ -275,7 +305,8 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
 async def logout(response: Response):
     
     #Delete the 'token' cookie by setting it to an empty string with an max_age=0
-    response.delete_cookie(key='token')
+    response.delete_cookie(key='refresh_token')
+    response.delete_cookie(key='access_token')
     return {"msg": "Logged out Successfully"}
 
 
@@ -292,6 +323,7 @@ def send_reset_email(recipient_email: str, token: str):
     # Construct reset URL and email change
         #frontend_url=os.getenv("FRONTEND_URL", " http://localhost:3000")
         #backend_url = os.getenv("BACKEND_URL","http://127.0.0.1:8000")
+        #base_url = str(request.base_url)
         reset_url = f"{frontend_url}/reset_password?token={token}" 
         subject = "Password reset request"
         body = f" Click the following link to reset your password:\n \nif you did not request a password reset, please ignore this email."
@@ -322,7 +354,25 @@ def send_reset_email(recipient_email: str, token: str):
 
 
 
-    
+#Comments
+# to validate the cookie and returns the user's session details.
+#@router.get("/me")
+#async def get_current_user(db: Session = Depends(get_db), token: str = Cookie(None)):
+    #if token is None:
+       #raise HTTPException(status_code=401, detail= "Not authenticated")
+    #try:
+       #payload = jwt. decode(token, JWT_SECRET, algorithms = [JWT_ALGORITHM])
+       #email = payload.get("sub")
+       #if email is None:
+        #raise HTTPException(status_code=401, detail="Invalid token")
+    #except jwt.ExpiredSignatureError:
+        #raise HTTPException(status_code=401, detail="Token has expired")
+    #except jwt.PyJWTError:
+       #raise HTTPException(status_code=401,detail = "Invalid token")
+    #db_user = db.query(User).filter(User.email == email).first()
+    #if not db_user:
+        #raise HTTPException(status_code=404, detail="User not found")
+    #return {"email": db_user.email} 
 
 
                      
