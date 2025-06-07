@@ -10,6 +10,8 @@ from api import candidate, user # importing routers
 #import dependencies
 #from user, candidate  import  as user
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
+import os
 load_dotenv()
 
 import re
@@ -21,18 +23,24 @@ app = FastAPI()
 
 
 frontend_url = os.getenv('FRONTEND_URL',"http://localhost:3000")
-
+logging.basicConfig(level=logging.INFO)
+logging.info(f"Allowed frontend URL: {frontend_url}")
+origins=[frontend_url,
+         'chrome-extensions://neobfeaageldckcenkpcfihbjkfkngcb',]
 app.add_middleware(    
     CORSMiddleware,
    
-    allow_origins=[frontend_url,'chrome-extensions://neobfeaageldckcenkpcfihbjkfkngcb','https://virtoratech.zohorecruit.com','https://infynixsync.zohorecruit.com/','https://www.linkedin.com','https://www1.jobdiva.com','https://recruiting.paylocity.com',
-                   'https://recruiting2.ultipro.com','https://jobs.lever.co/','https://job-boards.greenhouse.io'
-                   ],
+    allow_origins=origins,
 
     allow_credentials=True,
     allow_methods=["*"],  # ALlow all HTTP methods (GET, POST, etc..)
     allow_headers=["*"], 
 )
+if not os.path.exists('uploads'):
+    os.makedirs('uploads')
+app.mount('/uploads', StaticFiles(directory="uploads"),name='uploads')
+
+
 
 @app.exception_handler(Exception)
 async def global_handler(request: Request, exc: Exception):
@@ -64,49 +72,21 @@ if __name__ == "__main__":
     uvicorn.run("main:app", host=host, port=port, reload=True)
   
 
-
-                    
-# comments 
-
-
-#envi = os.getenv("ENVIRONMENT","development").lower()
-#if envi == 'production':
-    #frontend_url = os.getenv('FRONTEND_URL')
-    #if not frontend_url:
-        #raise RuntimeError("FRONTEND_URL IS NOT SET FOR PRODUTION")
-    #app.add_middleware(
-        #CORSMiddleware,
-        #allow_origins = [frontend_url],
-        #allow_credentials = True,
-        #allow_methods = ['*'],
-        #allow_headers = ['*'],
-
-    #)
-#else:
-    #frontend_url_regex=os.getenv('FRONTEND_URL')
-    #if not frontend_url_regex:
-        #raise RuntimeError('Frontend url regex is not founded')
-    #frontend_url = re.compile(frontend_url_regex)
-    #literal_origin = "http://localhost:3002"
-    #app.add_middleware(
-        #CORSMiddleware,
-        #allow_origins=[literal_origin],
-        #allow_origin_regex = frontend_url_regex,
-        #allow_credentials = True,
-        #allow_methods = ['*'],
-        #allow_headers = ['*'],
-
-    #)
-
-#CORS has same orgin policy
-#Cross orgin resource sharing used to give access or restrict resources on web server requested by web pages hosted by different domain.
-
-# Adjust the allowed origins to your frontend's URL
-#origins = [r"http://localhost:\d+", frontend_url]
-    #add other origins if needed]
-
-
-    #allow_origins=[frontend_url] if envi == 'production' else ['*'],
-
-  #uvicorn.run("main:app", host="localhost", port=8000)
+               
+#       'https://virtoratech.zohorecruit.com',
+ #        'https://infynixsync.zohorecruit.com',
+  #       'https://www.linkedin.com',
+   ###    'https://recruiting2.ultipro.com',
+       #  'https://jobs.lever.co',
+      #   'https://job-boards.greenhouse.io',
+        # 'https://jobs.davisadagency.com',
+         #'https://careersus-shure.icims.com',
+         #'https://jobs.ashbyhq.com',
+        # 'https://bedgearhr.applicantstack.com',
+         #'https://careers.adobe.com',
+         #'https://motionrecruitment.com',
+         #'https://eeho.fa.us2.oraclecloud.com',
+         #'https://job-boards.greenhouse.io',
+         #'https://app.trinethire.com',
+         #'https://fa-etgw-saasfaprod1.fa.ocs.oraclecloud.com'
 

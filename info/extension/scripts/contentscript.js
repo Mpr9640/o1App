@@ -23,133 +23,92 @@ const checkPage = async ()=>{
 
    
 }; 
-
-function showIcon(){
+function showIcon() {
     const iconUrl = chrome.runtime.getURL('images/icon.jpeg');
-    const icon = document.createElement('img');
-    icon.src = iconUrl;
-    icon.id = 'jobAidIcon';
-    icon.style.position = 'fixed';
-    icon.style.top = '10px';
-    icon.style.right = '10px';
-    icon.style.xindex = "1000";
-    icon.style.cursor = 'pointer';
-    document.body.appendChild(icon);
-    //Add a click Listner to trigger the popup
-    icon.addEventListener('click', ()=>{
-        chrome.runtime.sendMessage({action: 'openPopup'});
+    const icon   = document.createElement('img');
+    icon.src     = iconUrl;
+    icon.id      = 'jobAidIcon';
+  
+    // initial CSS
+    Object.assign(icon.style, {
+      position:   'fixed',
+      left:       '20px',
+      top:        '20px',
+      width:      '48px',
+      height:     '48px',
+      zIndex:     '10000',
+      cursor:     'pointer',
+      userSelect: 'none',
     });
-}
+  
+    let isDragging = false;
+    let moved      = false;
+    let offsetX    = 0;
+    let offsetY    = 0;
+  
+    // Start drag on pointerdown
+    icon.addEventListener('pointerdown', e => {
+      isDragging = true;
+      moved      = false;
+      offsetX    = e.clientX - icon.offsetLeft;
+      offsetY    = e.clientY - icon.offsetTop;
+      icon.setPointerCapture(e.pointerId);
+      icon.style.cursor = 'grabbing';
+      // prevent text‑selection / image drag
+      e.preventDefault();
+    });
+  
+    // Move on pointermove
+    icon.addEventListener('pointermove', e => {
+      if (!isDragging) return;
+      moved = true;
+      //compute raw positions
+      x= e.clientX - offsetX;
+      y= e.clientY - offsetY;
+    // clamp to [0, viewport-iconSize]
+      const maxX=window.innerWidth - icon.offsetWidth;
+      const maxY = window.innerHeight-icon.offsetHeight;
+
+      x=Math.max(0,Math.min(x,maxX));
+      y=Math.max(0,Math.min(y,maxY));
+
+      icon.style.left = x + 'px';
+      icon.style.top = y + 'px';
+
+    });
+  
+    // End drag on pointerup (auto‑drops)
+    icon.addEventListener('pointerup', e => {
+      if (!isDragging) return;
+      isDragging = false;
+      icon.releasePointerCapture(e.pointerId);
+      icon.style.cursor = 'pointer';
+    });
+  
+    // Click handler: only fire if no drag occurred
+    icon.addEventListener('click', e => {
+      if (moved) {
+        // suppress any click after a drag
+        e.stopImmediatePropagation();
+        return;
+      }
+      chrome.runtime.sendMessage({ action: 'openPopup' });
+    });
+  
+    document.body.appendChild(icon);
+  }
+  
 function removeIcon(){
     const icon = document.getElementById('jobAidIcon');
     if(icon){
         icon.remove();
     }
+ 
+    //if(existing) existing.remove();
 }
-checkPage(); //checking the page on initial load
+checkPage();
+//document.addEventListener(DOMContentLoaded,checkPage); //checking the page on initial load
 
 //Optionally checking periodically if the URl changes without a full relaod
 setInterval(checkPage, 5000);
 
-
-
-//comments
-/*
-//function to poll localstorage for the token.
-async function getStoredAuth(){
-    try{
-        const {authToken, authTokenExpiry } = await new Promise((resolve,reject) =>{
-            chrome.storage.local.get(['authToken', 'authTokenExpiry'], (result) =>{
-                if(chrome.runtime.lastError){
-                    console.error("Chrome storage error:",chrome.runtime.lastError);
-                    return reject(chrome.runtime.lastError);
-                }
-                else{
-                    resolve(result);
-                }
-            });
-        });
-        console.log("Stored values:", { authToken, authTokenExpiry});
-        return {authToken, authTokenExpiry};
-    }
-    catch(err){
-        return {authToken: null, authTokenExpiry: null}; //console.log will never run after return
-    }
-}
-
-async function checkForToken(){
-    const {authToken: token, authTokenExpiry: expiry} = await getStoredAuth();
-    if(token && expiry && !isNaN(expiry) && Date.now() < Number(expiry)){
-        try{
-            const response = await chrome.runtime.sendMessage({
-                action:'setAuthToken',
-                token: token,
-                expiry: expiry
-            });
-            console.log("Token Msg sent:", response);
-        }
-        catch(error){
-            console.error("Error sending  Token Msg:",error);
-        }
-        console.log('Token found in chrome.storage:',token);
-        return token;
-
-    }
-    else{
-        console.log("Token not found in chrome storage looking in local storage");
-        const pageToken = localStorage.getItem('authToken');
-        console.log('Token from local', token);
-        const pageExpiry = localStorage.getItem('authTokenExpiry');
-        console.log('expiry from local', expiry);
-        if(pageToken && pageExpiry && !isNaN(pageExpiry) && Date.now()<Number(pageExpiry)){
-            try{
-                const response = await chrome.runtime.sendMessage({
-                    action: 'setAuthToken',
-                    token: pageToken,
-                    expiry:pageExpiry
-                });
-                console.log("Token Msg sent:");
-            }
-            catch(error){
-                console.error("Error sending Token msg:", error);
-            }
-            return pageToken;
-        }
-        else{
-            console.log('Looking for token not found in local');
-            return null;
-            // setTimeout(checkForToken,1000);  //retry for token after 1 sec, if not available
-        }
-
-    }
-checkForToken().then((token) =>{
-    if(!token){
-        console.warn("Ext will work only if you login in Main web app");
-    }
-    else{
-        console.log('Token success retrieved',token);
-    }
-
-
-}).catch((error) =>{
-    console.error("No retrieved erro came:", error);
-}); 
-
-
-console.log("Content.js is accessed")
-
-} 
- try{
-                const response = await chrome.runtime.sendMessage({
-                    action: 'jobApplicationDetected'
-                });
-                console.log("Icon Msg sent:", response);
-                jobApplicationDetected = true;
-
-            }
-            catch(error){
-                console.error("Error sending Icon msg:", error);
-            }
-                
-            
-            */

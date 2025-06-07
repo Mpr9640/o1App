@@ -42,7 +42,7 @@ class ForgotPasswordRequest(BaseModel):   #because to ensure structuring and val
 class ResendForgotPasswordRequest(BaseModel): #basemodel helps to structure request body in a clear & consistent way.
     email: EmailStr
 
-
+ 
 
 
 # In-memory " database" for demonstration purpose
@@ -190,15 +190,19 @@ async def login(user: UserLogin, response: Response, db: Session = Depends(get_d
         value=access_token,
         httponly=True,
         secure=False,
-        samesite="lax",  #"none", which is not used to accept for only samw port and domain.
+        path = '/',
+        #samesite="lax",  #"none", which is not used to accept for only samw port and domain.
+        samesite='Lax',
         max_age= JWT_EXPIRATION_MINUTES*60,
     )
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=False,
+        secure=False, # for local development.
         samesite="lax",
+        path = '/',
+        #samesite='None',
         max_age=REFRESH_TOKEN_EXPIRATION_MINUTES*60,
     )
     print("Login Cookies are maded")
@@ -225,6 +229,9 @@ async def refresh_token(response: Response, refresh_token: str = Cookie(None)):
              value=new_access_token,
              httponly=True,
              samesite='lax',
+             #samesite='None',
+             secure = False,
+             path = '/',
              max_age=JWT_EXPIRATION_MINUTES*60,
          )
          return{"access_token": new_access_token}

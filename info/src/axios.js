@@ -1,5 +1,7 @@
 //Axios interceptor
 import axios from 'axios';
+import {useNavigate} from 'react-router-dom';
+
 
 //creating an axios instance
 const createApiClient = () =>{
@@ -37,9 +39,11 @@ apiClient.interceptors.response.use(
                 }
             }
             catch(refreshError){
-                console.error('Failed to refresh token. please log in again.');
+                console.log('Failed to refresh token. please log in again.');
                 //Optionally redirect to login 
-                window.location.href =  "/login";
+                window.location.href =  "/";
+                //const navigate = useNavigate();
+                //navigate('/login');
                 return Promise.reject(refreshError);
             }
         }

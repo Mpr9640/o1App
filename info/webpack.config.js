@@ -4,6 +4,7 @@
 const path = require('path');
 const webpack = require('webpack');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
+const Dotenv=require('dotenv-webpack');
 
 //export default
 
@@ -27,7 +28,7 @@ module.exports ={
     'process':'undefined', //or '{}' if some libraries expect it to exists.
   }),new CopyWebpackPlugin({
     patterns: [{from: 'extension/manifest.json',to: ''},{from: 'extension/images', to:'images'},{from: 'extension/popup', to:'popup'}, {from:'extension/scripts', to: 'scripts'},],
-  })],
+  }),new Dotenv({path: './.env',safe:true,systemvars: true}),], //true is to verify variables, systemvars, allowin process.env to overwrite 
   module:{
     rules:[
       {
