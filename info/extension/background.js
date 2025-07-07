@@ -1,4 +1,5 @@
 import apiClient from "../src/axios.js";
+import { tokenize, stopWords, removeStopWords, stemWord, stemTokens, extractKeywords, predefinedSkillsList, getRecognizedSkills, getSkillsFromStorage, findIntersection, calculateSkillsMatchingPercentage } from './scripts/skillmatching.js';
 //Listens for messages from contentscript.js
 const LAST_SYNC_KEY = 'lastAutofillSyncTime';
 async function fetchDataFromBackend() {
@@ -92,4 +93,48 @@ setInterval(fetchDataFromBackend, 10*60*1000);
 /*chrome.action.onClicked.addListener(async(tab) => {
     chrome.action.openPopup();
 });*/
+
+
+//Main Message Listener and Orchestration
+
+chrome.runtime.onMessage.addListener(async(request,sender,sendResponse) =>{
+    console.log('got a msg from content for job matching')
+    if(request.action === 'jdText' && request.text){
+        const jobDescriptionText = request.text;
+        console.log('Received Job description in skill matching');
+
+    //1. Get Processed job keywords
+        const allExtractedKeywords = extractKeywords(jobDescriptionText);
+
+        //2. Filter these keywords against  your predefined skill list
+
+        const jobRecognizedSkills = getRecognizedSkills(allExtractedKeywords);
+
+        //3.Get user skills from storage
+
+        const userSkillSet = await getSkillsFromStorage(); //Await the promise
+
+        //Finding matched words.
+        const matchedWords = findIntersection(jobRecognizedSkills,userSkillSet);
+
+        //4. calculate matching percentage
+
+        const percentage = calculateSkillsMatchingPercentage(jobRecognizedSkills,userSkillSet);
+
+        // 5. send the perecentage back to content.js to display
+
+        if(sender.tab && sender.tab.id){
+            chrome.tabs.sendMessage(sender.tab.id, {action: 'displayPercentage',percentage: percentage,matchedWords:[...matchedWords]});
+            console.log(`Sent percentage ${percentage.toFixed(2)}% to content.js on tab ${sender.tab.id}`);
+        }
+
+        //Acknowledge receipt of the message
+        sendResponse ({status: "JOb text processed and percentage sent."});
+        return true; //Indicated that sendResponse will be called asynchronously.
+    }
+    //For other message actions,if any,handle them here
+    return false;
+
+});
+
 console.log("background js is accessed.")

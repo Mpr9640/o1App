@@ -37,10 +37,10 @@ document.addEventListener('DOMContentLoaded',async() =>{
                         await chrome.scripting.executeScript({
                             target: {tabId: tabs[0].id},
                             func: (url,token,data) =>{
-                                if (document.getElementById('autofill-script')) {
+                                /*if (document.getElementById('autofill-script')) {
                                     console.log('Autofill script already injected. Skipping...');
                                     return;
-                                }
+                                }*/
                                 const script = document.createElement('script');
                                 script.type = 'module';
                                 script.src = url;

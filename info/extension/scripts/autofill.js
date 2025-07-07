@@ -277,18 +277,24 @@ async function fillInput(el, value) {
     } else if (normalizedValue == false) {
         normalizedValue = 'no';
     }
+
+    const hasPopup = el.getAttribute('aria-haspopup')?.toLowerCase() === "listbox";
+    const siblingButtonPopup = !!el.parentElement?.querySelector('button[aria-haspopup = "listbox"]');
+    const siblingSpanPopup = !!el.nextElementSibling?.matches('span[aria-haspopup = "listbox"]');
     
     console.log(' starting fillInput: Tag name', tag, 'Type', type, 'Value', normalizedValue);
     console.log(`normalizedValue${normalizedValue}`);
 
     if (tag === 'SELECT') {
         // Handle complex dropdowns/comboboxes (e.g., Material-UI, React-Select)
+        el.click();
         normalizedValue = normalizeFieldNameWithSpace(normalizedValue);
         if (el.getAttribute('role') === 'combobox' ||
             el.classList.contains('autocomplete') ||
             el.closest('.dropdown-menu,.MuiAutocomplete-root') ||
             (el.placeholder && el.placeholder.toLowerCase().includes('search')) ||
-            (el.placeholder && el.placeholder.toLowerCase().includes('select'))) {
+            (el.placeholder && el.placeholder.toLowerCase().includes('select')) || hasPopup ||
+            siblingButtonPopup || siblingSpanPopup ) {
             console.log('fillInput: Detected complex dropdown/combobox.');
             await trySearchingInDropdown(el, normalizedValue);
         } else {
@@ -488,8 +494,8 @@ async function fillInput(el, value) {
 
     }else if (el.type !== 'file') { // Prevent setting value on file inputs directly
         console.log('fillInput: Detected standard text/number/date input.');
-        el.focus();
-        el.click(); // Click to focus or activate input
+        //el.focus();
+        //el.click(); // Click to focus or activate input
         await delay(50);
         if (normalizedValue === 'yes' || normalizedValue === 'no') {
             value = normalizedValue; // Use normalized "yes"/"no" for text inputs if applicable
@@ -500,17 +506,19 @@ async function fillInput(el, value) {
             el.classList.contains('autocomplete') ||
             el.closest('.dropdown-menu,.MuiAutocomplete-root') ||
             (el.placeholder && el.placeholder.toLowerCase().includes('search')) ||
-            (el.placeholder && el.placeholder.toLowerCase().includes('select'))) {
+            (el.placeholder && el.placeholder.toLowerCase().includes('select'))
+            || hasPopup ||
+            siblingButtonPopup || siblingSpanPopup ) {
             console.log('fillInput: Detected text input acting as a complex dropdown/combobox.');
             await trySearchingInDropdown(el, normalizedValue);
             return;
         } else {
             // Standard text-like input
-            //el.value = normalizedValue;
-            //el.dispatchEvent(new Event('input', { bubbles: true }));
-            //el.dispatchEvent(new Event('change', { bubbles: true })); // Important for frameworks
+            el.value = normalizedValue;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true })); // Important for frameworks
             //await delay(10);
-            for (let i =0; i< value.length; i++){
+            /*for (let i =0; i< value.length; i++){
                 const char = value[i];
                 el.value +=char;
 
@@ -522,8 +530,8 @@ async function fillInput(el, value) {
                 el.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true, cancelable: true }));
 
                 await delay(10);
-            }
-            el.dispatchEvent(new Event('change',{bubbles: true}));
+            }*/
+            //el.dispatchEvent(new Event('change',{bubbles: true}));
 
         }
         el.blur();
@@ -538,8 +546,8 @@ async function trySearchingInDropdown(inputElement, value) {
     try {
         console.log('trySearchingInDropdown: Starting process for searchable dropdown:', inputElement);
        // 1. Ensure the input is clickable and focused
-        inputElement.focus();
-        inputElement.click();
+        //inputElement.focus();
+        //inputElement.click();
         await new Promise(resolve => setTimeout(resolve, 100)); // Small delay after click
         
         inputElement.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -569,6 +577,8 @@ async function trySearchingInDropdown(inputElement, value) {
             inputElement.dispatchEvent(new Event('change', { bubbles: true }))
 
         }
+        inputElement.value = normalizedValue;
+        inputElement.dispatchEvent(new Event('change',{bubbles: true}));
         await delay(300); // Give time for UI to react to full input
         console.log(`trySearchingInDropdown: Finished simulating typing "${value}"`);
         const maxTries = 1; // Increased max tries for slower loading dropdowns
@@ -747,19 +757,23 @@ function dataURLtoBlob(dataurl) {
 
 const sectionKeywords = [
     { keywords: [/residence/, /residential/, /home/, /permanent/,/location/,/living/], type: 'address', prefix: 'residence' },
-    { keywords: [/school/, /education/, /university/,/college/], type: 'address', prefix: 'school' },
+    { keywords: [/school/, /education/, /university/], type: 'address', prefix: 'school' },
     { keywords: [/job/, /employment/, /work/, /company/, /employe/], type: 'address', prefix: 'job' },
 ];
 
 function getSectionPrefix(inputElement) {
     console.log('Section prefix function started.')
     let current = inputElement;
-    while (current && current !== document.body) {
-        const heading = current.closest('fieldset,section,div');
-        if (heading) {
+    const bodyElement = document.body;
+    while (current && current !== bodyElement && bodyElement.contains(current)) {
+        const heading = current.closest('fieldset,section,div,span');
+        console.log('heading',heading);
+        if (heading && bodyElement.contains(heading)) {
             const title = heading.querySelector('legend,h1,h2,h3,label');
+            console.log('title',title);
             if (title) {
                 const text = title.textContent.toLowerCase();
+                console.log('text',text);
                 for (const section of sectionKeywords) {
                     if (section.keywords.some(k => k.test(text))) {
                         console.log('section prefix function:', section.prefix);
@@ -816,11 +830,11 @@ async function fillAddressFields(input, data, prefix) {
     if (!currentAddressFields) return;
 
     const mappings = [
-        { keywords: [/address/, /street/], dataKey: currentAddressFields.address },
-        { keywords: [/city/, /town/], dataKey: currentAddressFields.city },
+         { keywords: [/city/, /town/], dataKey: currentAddressFields.city },
+         { keywords: [/zip/, /postal/], dataKey: currentAddressFields.zip_code },
+         { keywords: [/country/, /origin/, /region/], dataKey: currentAddressFields.country },
         { keywords: [/state/, /province/,/location/], dataKey: currentAddressFields.state },
-        { keywords: [/zip/, /postal/], dataKey: currentAddressFields.zip_code },
-        { keywords: [/country/, /origin/, /region/], dataKey: currentAddressFields.country },
+        { keywords: [/address/, /street/], dataKey: currentAddressFields.address },
         { keywords: [/start.*date/], dataKey: currentAddressFields.start_date, type: 'date' },
         { keywords: [/end.*date/], dataKey: currentAddressFields.end_date, type: 'date' },
         { keywords: [/name/], dataKey: currentAddressFields.Name },
@@ -837,16 +851,20 @@ async function fillAddressFields(input, data, prefix) {
             if (map.type === 'date') {
                 //fillInput(input, formatDate(data[map.dataKey])); // Use fillInput for date types as well
                 await queueFillInputs(input,formatDate(data[map.dataKey]));
-            } else if (map.type === 'checkbox' && input.type.toLowerCase() === 'checkbox') {
-                //fillInput(input, data[map.dataKey]); // Use fillInput for checkboxes
+            } 
+            else{
                 await queueFillInputs(input,data[map.dataKey]);
+            }
+            /*else if (map.type === 'checkbox' && input.type.toLowerCase() === 'checkbox') {
+                //fillInput(input, data[map.dataKey]); // Use fillInput for checkboxes
+                
             } else if (input.tagName.toUpperCase() === 'SELECT' || input.getAttribute('role') === 'combobox' || input.classList.contains('autocomplete')) {
-                //fillInput(input, data[map.dataKey]); // Use fillInput for selects and autocompletes
+                //fillInput(input, data[map.dataKey]); // Use fillInput for selects and autocomplete
                 await queueFillInputs(input,data[map.dataKey]);
             } else if (input.type !== 'file') { // Prevent setting value on file inputs here
                 //fillInput(input, data[map.dataKey]); // Use fillInput for regular inputs
                 await queueFillInputs(input,data[map.dataKey]);
-            }
+            } */
             break; // Move to the next input after finding a match
         }
     }
@@ -854,6 +872,7 @@ async function fillAddressFields(input, data, prefix) {
 }
 
 const fieldMappings = [
+    {keywords: [/company/,/employer/], dataKey: 'companyname'},
     { keywords: [/email/], dataKey: 'email', type: 'text' },
     { keywords: [/first.*name/], dataKey: 'firstname', type: 'text' },
     { keywords: [/middle.*name/], dataKey: 'middlename', type: 'text' },
@@ -904,24 +923,23 @@ const inputSelection=function(){
             )*/
         }
     });
-
-
     const otherFields = document.querySelectorAll(
-        'input[type="text"], ' +
-        'input[type="email"], ' +
-        'input[type="date"], ' +
-        'input[type="tel"], ' +
-        'input[type="number"], ' +
-        'input[type="checkbox"], ' +
-        'input[type="radio"], ' +
-        'input[type="password"], ' +
-        'input[type="search"], ' +
-        'select, ' +
-        'textarea, ' +
-        '[contenteditable="true"], ' +
-        'input:not([type])'  // fallback for inputs without type
+        'input:not([disabled]):not([readonly])[type="text"], ' +
+        'input:not([disabled]):not([readonly])[type="email"], ' +
+        'input:not([disabled]):not([readonly])[type="date"], ' +
+        'input:not([disabled]):not([readonly])[type="tel"], ' +
+        'input:not([disabled]):not([readonly])[type="number"], ' +
+        'input:not([disabled]):not([readonly])[type="checkbox"], ' +
+        'input:not([disabled]):not([readonly])[type="radio"], ' +
+        'input:not([disabled]):not([readonly])[type="password"], ' +
+        'input:not([disabled]):not([readonly])[type="search"], ' +
+        'input:not([disabled]):not([readonly]):not([type]), ' + // Input without type, but not disabled/readonly
+        'select:not([disabled]):not([readonly]), ' +
+        'textarea:not([disabled]):not([readonly]), ' +
+        '[contenteditable="true"]:not([disabled]):not([readonly])' // contenteditable can also be disabled by contenteditable="false" or other means, though "disabled" attribute usually doesn't apply directly.
     );
     inputFields.push(...otherFields);
+    console.log(`inputfields:${inputFields}`);
     return inputFields;
 
 }
@@ -939,8 +957,20 @@ async function populateFields(inputFields,data) {
     autofillData = normalizedData; // Assign to the global autofillData.
     const processedRadioGroups = new Set();
     for (const input of inputFields) {
+        //Skipping if already autofilled during this session)prevents refilling on subsequent observer runs);
+        if(input.getAttribute('data-autofilled') == 'true'){
+            continue;
+        }
         input.focus();
         simulateMouseMove(input);
+        if (input.disabled || input.readOnly) {
+            console.log(`Skipping disabled/read-only input:`, input);
+            continue;
+        }
+        if(input.defaultValue && input.value === input.defaultValue){
+            console.log('find default value');
+            continue;
+        }
         let cleared = false;
         if(!cleared && input.type === 'text'){
             
@@ -950,11 +980,7 @@ async function populateFields(inputFields,data) {
         }
         cleared = true;
         // Skip if element is disabled or read-only at this stage too
-        if (input.disabled || input.readOnly) {
-            console.log(`Skipping disabled/read-only input:`, input);
-            continue;
-        }
-        if((input.type == 'radio' || input.type == 'checkbox') && input.closest('fieldset')){
+        if((input.type == 'radio' || input.type == 'checkbox')){ //&& input.closest('fieldset')){
             const parentFieldset = input.closest('fieldset');
             if (processedRadioGroups.has(parentFieldset)){
                 continue;
@@ -966,12 +992,15 @@ async function populateFields(inputFields,data) {
 
         }
 
-        //Skipping if already autofilled during this session)prevents refilling on subsequent observer runs);
-        if(input.getAttribute('data-autofilled') == 'true'){
+        const normalizedInputName = inputFieldSelection(input);
+        if(normalizedInputName.includes('location')){
+            console.log('location is found.')
+            let valuee = 'San';
+            await queueFillInputs(input,valuee);
+            //input.value = normalizedData['residencecity'] + ' ' + normalizedData['residencestate'] + ' ' + normalizedData['residencecountry'];
+            //input.dispatchEvent(new Event('change',{bubbles: true}));
             continue;
         }
-        const normalizedInputName = inputFieldSelection(input);
-
     
         console.log('N.IN in populate:',normalizedInputName);
         const mapping = fieldMappings.find(m => m.keywords.some(rx => rx.test(normalizedInputName)));
@@ -980,6 +1009,10 @@ async function populateFields(inputFields,data) {
         // Check if mapping exists AND if the dataKey exists in normalizedData
         if (mapping &&  (mapping.type === 'address' || normalizedData.hasOwnProperty(mapping.dataKey))) {
             const val = normalizedData[mapping.dataKey] || '';
+            if(input.type ==='text' || input.tag === 'select'){
+                input.click();
+                console.log('input clicked');
+            }
             input.scrollIntoView({ behavior: 'smooth', block: 'center' });
             await delay(50); //small delay after scroll for visibility
             input.classList.add('autofill-highlight');
@@ -1005,6 +1038,10 @@ async function populateFields(inputFields,data) {
                 const sectionPrefix = getSectionPrefix(input);
                 fillAddressFields(input,normalizedData,sectionPrefix);
                 console.log('Address field is completed.');
+
+
+                
+
             } else if (mapping.type === 'date') {
                 fillInput(input, formatDate(val)); // Use fillInput to trigger events
             } else if (mapping.type === 'code' && !mapping.handleCountryCode  && mapping.dataKey === 'phonenumber') {
@@ -1065,8 +1102,8 @@ function simulateMouseMove(el){
 // Initialization and Entry Point
 export async function autofillInit(token, dataFromPopup = null) {
 
-    if (hasAutofilled) return;
-    hasAutofilled = true;
+    //if (hasAutofilled) return;
+    //hasAutofilled = true;
     console.log('Autofill init called with token');
     document.head.appendChild(style);
     
