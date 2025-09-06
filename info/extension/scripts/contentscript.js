@@ -5,19 +5,6 @@ function isjobApplicationPage(){
     return jobApplicationKeywords.some(keyword =>url.includes(keyword));
 }
 
-// Function to get the job description text
-/*function getJobDescriptionText() {
-    // --- IMPORTANT: You need to replace this with your actual DOM query ---
-    // Example: This might be the innerText of a specific div or section
-    const jobDescriptionElement = document.querySelector('#jobDescriptionText') ||
-                                  document.querySelector('.job-details-content') ||
-                                  document.body; // Fallback to body text
-
-    if (jobDescriptionElement) {
-        return jobDescriptionElement.innerText;
-    }
-    return ''; // Return an empty string if no text is found
-}*/
 function getJobDescriptionText() {
   const headings = Array.from(document.querySelectorAll('p,h1, h2, h3, h4, h5, h6, strong, b')).filter(h =>
     /rolerequirements|overview | abouttherole|duties|requirements|qualifications|description|needs|skills|responsibilities/i.test(h.textContent.toString().replace(/\s/g,'').toLowerCase())

@@ -1,35 +1,51 @@
 {
-    "manifest_version" : 3,
-    "name" : "Job aid",
-    "version" : "1.0",
-    "description" : "Automatic Job filler",
-    "permissions" : ["identity","storage","activeTab", "scripting", "notifications"],
-    "host_permissions":["http://localhost:8000/*","<all_urls>"],
-    "action" : {
-        "default_popup" : "popup/popup.html",
-        "default_title" : "Rapido", 
-        "default_icon" : {
-            "16": "images/icon.jpeg",
-            "24": "images/icon.jpeg",
-            "32": "images/icon.jpeg"
-
-        } 
-    },
-    "background" : {
-        "service_worker": "background.bundle.js",
-        "type": "module" 
-    },
-    "content_scripts" : [
-        {
-            "matches" : ["<all_urls>"],
-            "js" : ["scripts/contentScript.js"],
-            "run_at": "document_idle"
-        }
-    ],
-    "web_accessible_resources": [{
-        "resources": ["images/icon.jpeg","autofill.bundle.js"],
-        "matches": ["<all_urls>"]
-    }]
-
-
+  "manifest_version": 3,
+  "name": "Job Aid",
+  "version": "1.0",
+  "description": "Automatic Job filler",
+  "permissions": [
+    "identity",
+    "storage",
+    "activeTab",
+    "scripting",
+    "notifications"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "https://huggingface.co/*",
+    "https://cdn.jsdelivr.net/*",
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Rapido",
+    "default_icon": {
+      "16": "images/icon.jpeg",
+      "24": "images/icon.jpeg",
+      "32": "images/icon.jpeg"
+    }
+  },
+  "background": {
+    "service_worker": "background.bundle.js",
+    "type": "module"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:8000 https://huggingface.co https://cdn.jsdelivr.net https://cas-bridge.xethub.hf.co https://*.huggingface.co;"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["scripts/contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "images/icon.jpeg",
+        "autofill.bundle.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

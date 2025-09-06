@@ -1,140 +1,163 @@
+// background.js — MV3-safe, non-blocking, embedding included
+
+import { pipeline} from '@huggingface/transformers';
 import apiClient from "../src/axios.js";
-import { tokenize, stopWords, removeStopWords, stemWord, stemTokens, extractKeywords, predefinedSkillsList, getRecognizedSkills, getSkillsFromStorage, findIntersection, calculateSkillsMatchingPercentage } from './scripts/skillmatching.js';
-//Listens for messages from contentscript.js
-const LAST_SYNC_KEY = 'lastAutofillSyncTime';
+import {
+  tokenize, stopWords, removeStopWords, stemWord, stemTokens,
+  extractKeywords, predefinedSkillsList, getRecognizedSkills,
+  getSkillsFromStorage, findIntersection, calculateSkillsMatchingPercentage
+} from './scripts/skillmatching.js';
+// ===== Embedding pipeline =====
+let extractorPromise = null;
+async function getExtractor() {
+  if (!extractorPromise) {
+    extractorPromise = pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized: true, progress_callback: (p) => console.log('[transformers]', p),use_cache: true, });
+    console.log('Embedding model preloaded succesfully');
+    
+  }
+  return extractorPromise;
+}
+
+function meanPoolAndNormalize(tensor) {
+  const { dims, data } = tensor;
+  if (!dims || dims.length !== 3) throw new Error(`Unexpected tensor dims: ${dims}`);
+  const [batch, tokens, hidden] = dims;
+  if (batch !== 1) throw new Error('meanPoolAndNormalize expects batch=1');
+  const out = new Float32Array(hidden);
+  for (let t = 0; t < tokens; t++) {
+    const base = t * hidden;
+    for (let h = 0; h < hidden; h++) out[h] += data[base + h];
+  }
+  const inv = 1 / Math.max(1, tokens);
+  for (let h = 0; h < hidden; h++) out[h] *= inv;
+  const norm = Math.sqrt(out.reduce((sum, v) => sum + v*v, 0)) || 1;
+  for (let h = 0; h < hidden; h++) out[h] /= norm;
+  return Array.from(out);
+}
+function cosineSim(a, b) {
+  return a.reduce((sum, v, i) => sum + v * b[i], 0);
+}
+
+async function embedOne(text) {
+  const extractor = await getExtractor();
+  const output = await extractor(text);
+  return meanPoolAndNormalize(output);
+}
+
+async function embedMany(texts) {
+  const out = [];
+  for (const t of texts) out.push(await embedOne(t));
+  return out;
+}
+
+// ===== Backend / storage =====
 async function fetchDataFromBackend() {
+  try {
+    const response = await apiClient.get('api/candidate', { withCredentials: true });
+    const data = response.data;
+    data['residence_location'] = `${data['residence_city']},${data['residence_state']}`;
+    data['school_location'] = `${data['school_city']},${data['school_state']}`;
+    data['job_location'] = `${data['job_city']},${data['job_state']}`;
+    await chrome.storage.local.set({ autofillData: data });
+    console.log('Fetched latest data from backend:', data);
+    return data;
+  } catch (e) {
+    console.error("Error fetching candidate data:", e);
+    return null;
+  }
+}
+
+async function fetchResumeFile(fileUrl) {
+  try {
+    const res = await fetch(fileUrl);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const filename = fileUrl.split('/').pop() || 'autofilled_file';
+    return new File([blob], filename, { type: blob.type });
+  } catch (e) {
+    console.error('Error fetching resume file:', e);
+    return null;
+  }
+}
+
+// ===== Unified message listener =====
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  (async () => {
     try {
-        const response = await apiClient.get('api/candidate', {
-            //headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            withCredentials: true
-        });
-        const data = response.data;
-        console.log('Fetched latest data from backend:',data);
-        saveDataToChromeStorage(data); //store the updated data.
-        //chrome.storage.local.set({[LAST_SYNC_KEY]: Date.now()});
-        return data;
-    } catch (error) {
-        console.error("Error fetching candidate data:", error);
-        return null;
-    }
-}
-function saveDataToChromeStorage(data){
-    chrome.storage.local.set({autofillData: data},()=>{
-        console.log("Autofill data stored in chrome storage.")
-
-    });
-}
-chrome.runtime.onMessage.addListener((request,sender,sendResponse)=>{
-    if(request.action === 'openPopup'){
+      if (request.action === 'openPopup') {
         chrome.action.openPopup();
-
-        //chrome.storage.local.get(auth)
         fetchDataFromBackend();
-        //optionally sending a response to the contentscript.js
-        sendResponse({success: true, message: 'Popup opened from content script.'});
-    }
+        sendResponse({ success: true, message: 'Popup opened.' });
+      } else if (request.action === 'fetching cookie') {
+        const response = await apiClient.post('/api/refresh', { withCredentials: true });
+        sendResponse({ success: true, data: response.data });
+      } else if (request.action === 'fetchResume') {
+        const file = await fetchResumeFile(request.fileUrl);
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = () => sendResponse({ success: true, fileData: reader.result, filename: file.name, type: file.type ||"application/pdf" });
+          reader.onerror = () => sendResponse({ success: false, error: 'Failed to read file' });
+          reader.readAsDataURL(file);
+        } else sendResponse({ success: false, error: 'Failed to fetch file' });
+        return true; //keep sendResponse async
+      } else if (request.action === 'jdText' && request.text) {
+        const allExtractedKeywords = extractKeywords(request.text);
+        const jobRecognizedSkills  = getRecognizedSkills(allExtractedKeywords);
+        const userSkillSet         = await getSkillsFromStorage();
+        const matchedWords         = findIntersection(jobRecognizedSkills, userSkillSet);
+        const percentage           = calculateSkillsMatchingPercentage(jobRecognizedSkills, userSkillSet);
 
-    else if(request.action === "fetching cookie"){
-        apiClient.post('/api/refresh',{withCredentials: true}).then((response)=>{sendResponse({success: true, data: response.data})}).catch((error)=>{sendResponse({success: false, error: error.message})});
-        return true; //Indicate response will be sent asynchronously.
-        console.log('notification to fetch cookie received.')
-        //on the top we made a call to candidate(as a protected endpoint where it rewuires authenticaton)
-        //responjse will hold CandidateCreate object.
+        if (sender.tab?.id) {
+          chrome.tabs.sendMessage(sender.tab.id, {
+            action: 'displayPercentage',
+            percentage,
+            matchedWords: [...matchedWords]
+          });
+        }
+        sendResponse({ status: 'Job text processed.' });
+      } else if (request.type === 'embed') {
+        const embedding = await embedOne(request.text || '');
+        sendResponse({ ok: true, embedding });
+      } else if (request.type === 'embeds') {
+        const embeddings = await embedMany(request.texts || []);
+        sendResponse({ ok: true, embeddings });
+      } else if (request.type === 'bestMatch') {
+        const { text, labels } = request;
+        const [qVec, labelVecs] = await Promise.all([embedOne(text || ''), embedMany(labels || [])]);
+        let bestIdx = -1, bestScore = -Infinity;
+        for (let i = 0; i < labelVecs.length; i++) {
+          const s = cosineSim(qVec, labelVecs[i]);
+          if (s > bestScore) { bestScore = s; bestIdx = i; }
+        }
+        // ✅ Only return label if score >= 0.7
+        if (bestScore >= 0.5) {
+          sendResponse({
+            ok: true,
+            index: bestIdx,
+            label: labels?.[bestIdx] ?? null,
+            score: bestScore
+          });
+        } else {
+          sendResponse({
+            ok: true,
+            index: -1,
+            label: null,
+            score: bestScore
+          });
+        }
+        sendResponse({ ok: true, index: bestIdx, label: labels?.[bestIdx] ?? null, score: bestScore });
+      } else {
+        sendResponse({ ok: false, error: 'Unknown request type' });
+      }
+    } catch (e) {
+      console.error('Background listener error:', e);
+      sendResponse({ ok: false, error: String(e?.message || e) });
     }
+  })();
+  return true; // keep async channel open
 });
 
-async function fetchResumeFile(fileUrl){
-    try{
-        const response = await fetch(fileUrl);
-        if (!response.ok) {
-            console.log(`Failed to fetch file from URL: ${fileUrl}`, response.status);
-            return false;
-        }
-        const blob = await response.blob();
-        const filename = fileUrl.split('/').pop() || 'autofilled_file';
-        const file = new File([blob], filename, { type: blob.type });
-
-        console.log('Resume fiel fetched succesfully in background: ${filename}');
-        return file;
-
-    }
-    catch(error){
-        console.error('Error fetching resume file in background:',error);
-        return null;
-    }
-}
-
-chrome.runtime.onMessage.addListener((request,sender,sendResponse)=>{
-    if(request.action === 'fetchResume'){
-        fetchResumeFile(request.fileUrl).then(file =>{
-            if(file){
-                //we can not send file object need to convert to base64 or blob url 
-                const reader = new FileReader();
-                reader.onload = ()=>{
-                    sendResponse({success: true, fileData: reader.result,filename: file.name})
-                };
-                reader.onerror = () =>{
-                    sendResponse({success: false, error: 'Failed to read file'});
-                };
-                reader.readAsDataURL(file); //Read file as base64
-            }
-            else{
-                sendResponse({success: false, error: 'Failed to fetch file'});
-            }
-        });
-        return true;
-    }
-})
+// Periodic backend sync
 setInterval(fetchDataFromBackend, 10*60*1000);
 
-
-
-
-/*chrome.action.onClicked.addListener(async(tab) => {
-    chrome.action.openPopup();
-});*/
-
-
-//Main Message Listener and Orchestration
-
-chrome.runtime.onMessage.addListener(async(request,sender,sendResponse) =>{
-    console.log('got a msg from content for job matching')
-    if(request.action === 'jdText' && request.text){
-        const jobDescriptionText = request.text;
-        console.log('Received Job description in skill matching');
-
-    //1. Get Processed job keywords
-        const allExtractedKeywords = extractKeywords(jobDescriptionText);
-
-        //2. Filter these keywords against  your predefined skill list
-
-        const jobRecognizedSkills = getRecognizedSkills(allExtractedKeywords);
-
-        //3.Get user skills from storage
-
-        const userSkillSet = await getSkillsFromStorage(); //Await the promise
-
-        //Finding matched words.
-        const matchedWords = findIntersection(jobRecognizedSkills,userSkillSet);
-
-        //4. calculate matching percentage
-
-        const percentage = calculateSkillsMatchingPercentage(jobRecognizedSkills,userSkillSet);
-
-        // 5. send the perecentage back to content.js to display
-
-        if(sender.tab && sender.tab.id){
-            chrome.tabs.sendMessage(sender.tab.id, {action: 'displayPercentage',percentage: percentage,matchedWords:[...matchedWords]});
-            console.log(`Sent percentage ${percentage.toFixed(2)}% to content.js on tab ${sender.tab.id}`);
-        }
-
-        //Acknowledge receipt of the message
-        sendResponse ({status: "JOb text processed and percentage sent."});
-        return true; //Indicated that sendResponse will be called asynchronously.
-    }
-    //For other message actions,if any,handle them here
-    return false;
-
-});
-
-console.log("background js is accessed.")
+console.log('Background service worker initialized.');

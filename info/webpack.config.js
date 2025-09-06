@@ -12,6 +12,7 @@ module.exports ={
     entry: {
       background: './extension/background.js', //tells the webpack that it is an entry point
       autofill: './extension/scripts/autofill.js',
+      embedding: './extension/scripts/embeddingclient.js',
     },
     output: {
         filename: '[name].bundle.js', //Dynamic name assigning based on filename  // this tells to create a new file named ... and in directory dist. known as output of webpack and contains code from js file and axios.
