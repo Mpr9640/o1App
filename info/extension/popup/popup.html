@@ -1,16 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
-    <head>
-        <title>Job Aid</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <link href="popup.css" rel="stylesheet">
-    </head>
-    <body>
-        <h1>Job Aid</h1>
-        <div id ="content">Loading..</div>
-       <!--<button id="autofillbutton">Autofill</button> -->
-        <script src="popup.js"></script>
-    
-    </body>
+  <head>
+    <title>Job Aid</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="popup.css" rel="stylesheet" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>Job Aid</h1>
+      <div id="authState" class="muted">Open App goes to homepage</div>
+    </header>
+
+    <main id="content" class="content">
+      <!-- LinkedIn-like Job card (clickable) -->
+      <div id="jobCard" class="job-card" hidden tabindex="0" role="button" aria-label="Open job">
+        <div class="job-card-left">
+          <img id="jobLogo" class="job-logo" alt="logo" />
+        </div> 
+        <div class="job-card-body">
+          <div id="jobTitle" class="job-title">—</div>
+          <div class="job-sub">
+            <span id="jobCompany">—</span>
+            <span class="dot">•</span>
+            <span id="jobLocation">—</span>
+          </div>
+          <a id="jobLink" class="job-link" href="#" target="_blank" rel="noopener">Open job</a>
+        </div>
+      </div>
+
+      <div class="row kpi" id="applied">Loading…</div>
+
+      <!-- Score/skills only when JD exists -->
+      <div class="row kpi" id="score" hidden>Skill match: —%</div>
+
+      <div class="row" id="matchesRow" hidden>
+        <div class="muted">Matches</div>
+        <div id="matches" class="pillwrap"></div>
+      </div>
+
+      <div class="row" id="othersRow" hidden>
+        <div class="muted">Other JD skills</div>
+        <div id="others" class="pillwrap"></div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <button id="openApp" class="neutral">App</button>
+      <button id="viewSkills" class="secondary">Skills on page</button>
+      <button id="autofillbutton">Autofill</button>
+      <button id="markApplied" class="success">Mark applied</button>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
 </html>

@@ -1,49 +1,77 @@
+.page { width: 100%; margin: 0; padding: 0; }
 
-*{
-    box-sizing: border-box;
-}
-body{
-    position: relative;
-    width: 100%;
-
-}
 .candidateprofile{
-    width: 80%;
-    border: 1px solid black;
-    border-radius: 8px;
-    position: absolute;
-    top: 10px;
-    left: 10%;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  padding: clamp(16px, 2.2vw, 24px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.06);
 }
 
-.candidateprofile form{
-    padding: 20px;
-    display: flex;
-    flex-direction: column; 
-    gap: 10px;
+.sectionTitle { margin: 6px 0 14px; font-size: clamp(1.1rem, 2vw, 1.3rem); font-weight: 600; color: var(--app-text); }
+.sectionHeader { margin: 18px 0 8px; display: flex; align-items: center; justify-content: space-between; }
+.sectionHeader h2 { margin: 0; font-size: clamp(1rem,1.8vw,1.2rem); font-weight: 600; color: var(--app-text); }
 
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0,1fr)); }
+@media (max-width:1024px){ .grid{ grid-template-columns: 1fr; } }
+
+/* Inputs */
+.candidateprofile input[type="text"],
+.candidateprofile input[type="email"],
+.candidateprofile input[type="tel"],
+.candidateprofile input[type="url"],
+.candidateprofile input[type="date"],
+.candidateprofile input[type="number"],
+.candidateprofile textarea {
+  width: 100%; padding: 12px;
+  border-radius: 12px; border: 1px solid var(--app-border);
+  background: #fff; color: var(--app-text);
+  outline: none; transition: border-color .15s, box-shadow .15s;
 }
-.candidateprofile label{
-    margin-right: 10px;
+.candidateprofile input:focus,
+.candidateprofile textarea:focus {
+  border-color: #d1d5db;
+  box-shadow: 0 0 0 2px rgba(17,24,39,.15);
 }
-.candidateprofile input, .candidateprofile textarea{
-    padding: 10px;
-    margin-top: 5px;
-    border: 1px solid #ccc;
-    font-size: 1rem;
+textarea { min-height: 90px; resize: vertical; }
+
+/* Repeatable cards */
+.repeatCard{
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  padding: 14px; margin-bottom: 12px;
+  background: var(--app-surface);
 }
-/* Button styling */
-.candidateprofile button{
-    padding: 0.75rem;
-    border: none;
-    background-color: #007BFF;
-    color: #fff;
-    font-size: 1rem;
-    border-radius: 4px;
-    cursor: pointer;
-    align-self: flex-start;
+.repeatLegend{ font-size: .95rem; font-weight: 600; color: var(--app-text); padding: 0 6px; }
+
+/* File */
+.fileLabel{
+  display:inline-flex; align-items:center; gap:10px;
+  padding: 10px 12px; width: 100%;
+  background: var(--app-surface);
+  border: 1px dashed var(--app-border);
+  border-radius: 12px; cursor: pointer;
 }
-.candidateprofile button:hover{
-    background-color: #0056b3;
+.fileLabel input[type="file"]{ display:none; }
+.fileText{ color: var(--app-muted); }
+.resumeLink{ margin-top:8px; color: var(--app-text); text-decoration: underline; }
+
+.checkboxRow{ display:inline-flex; align-items:center; gap:8px; padding: 10px 2px; user-select:none; }
+
+.primaryBtn, .btnAdd, .btnRemove {
+  border: 1px solid var(--app-border);
+  border-radius: 12px; padding: 10px 14px;
+  font-weight: 600; cursor: pointer;
+  color: var(--app-text); background: var(--app-surface-alt);
+  transition: background .15s, border-color .15s, transform .02s;
+}
+.primaryBtn:hover, .btnAdd:hover, .btnRemove:hover { background: #f3f4f6; }
+.primaryBtn, .btnRemove{
+  margin-top: 6px;
 }
 
+.srOnly{
+  position:absolute !important; width:1px !important; height:1px !important;
+  padding:0 !important; margin:-1px !important; overflow:hidden !important;
+  clip:rect(0,0,0,0) !important; white-space:nowrap !important; border:0 !important;
+}

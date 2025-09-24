@@ -1,15 +1,63 @@
-body{
-    width: 300px;
-    padding: 10px;
-    font-family: sans-serif;
-    display:flex;
-    justify-content: center;
-    align-items: center;
+/* Base */
+body {
+  width: 320px;
+  padding: 0;
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: #111827;
 }
-button{
-    padding: 10px 20px;
-    background-color: #007bff;
-    color: white;
-    border: none;
-    cursor: pointer;
+.header { padding: 10px 12px 0 12px; }
+.header h1 { font-size: 16px; margin: 0 0 2px 0; }
+.muted { color: #6b7280; font-size: 12px; }
+.content { padding: 8px 12px 0 12px; max-height: 360px; overflow: auto; }
+.row { margin-bottom: 10px; }
+.kpi { font-weight: 700; }
+
+/* Pills */
+.pillwrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { display: inline-block; padding: 4px 8px; border-radius: 9999px; background: #f3f4f6; font-size: 12px; }
+.pill.match { background: #d1fae5; font-weight: 700; }
+.pill.other { background: #f3f4f6; opacity: 0.75; }
+
+/* Footer buttons (2x2 grid) */
+.footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px 12px 12px 12px;
+  border-top: 1px solid #e5e7eb;
 }
+button { padding: 8px 10px; background-color: #3b82f6; color: white; border: none; border-radius: 8px; cursor: pointer; font: inherit; }
+button.secondary { background-color: #6b7280; }
+button.neutral { background-color: #6366f1; }
+button.success { background-color: #10b981; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* LinkedIn-like job card */
+.job-card {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: box-shadow 120ms ease, transform 120ms ease;
+  outline: none;
+}
+.job-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); transform: translateY(-1px); }
+.job-card:focus { box-shadow: 0 0 0 2px #bfdbfe; }
+
+.job-card-left { display: flex; align-items: start; }
+.job-logo {
+  width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: #f3f4f6;
+}
+.job-card-body { display: flex; flex-direction: column; gap: 2px; }
+.job-title { font-size: 14px; font-weight: 700; line-height: 1.2; }
+.job-sub { font-size: 12px; color: #6b7280; display: flex; gap: 6px; align-items: center; }
+.job-sub .dot { opacity: 0.6; }
+.job-link { font-size: 12px; margin-top: 4px; text-decoration: none; color: #2563eb; }
+.job-link:hover { text-decoration: underline; }

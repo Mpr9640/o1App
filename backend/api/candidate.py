@@ -1,247 +1,272 @@
-from fastapi import APIRouter, Depends, HTTPException, Cookie, status,UploadFile,File
-from fastapi.responses import JSONResponse
+# candidate.py (router)
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
-from models import Candidate
-from db import get_db
-import datetime
-from datetime import date, datetime
-from dependencies import create_jwt_token, get_current_user
 from typing import Optional
-import logging
-import os
-import uuid
-from fastapi.responses import FileResponse
 
-#configure logging
+from db import get_db
+from dependencies import get_current_user
+from models import Candidate, Education, Experience
+
+from schemas.candidate import CandidateUpsert  # if you split schemas; otherwise keep in same file
+import os, uuid
+import logging
+
 logging.basicConfig(level=logging.INFO)
 router = APIRouter()
 
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = "uploads"
+ALLOWED_EXT = {".pdf", ".doc", ".docx"}
 
-class CandidateCreate(BaseModel):
-    first_name: str
-    middle_name: Optional[str]
-    last_name: str
-    full_name: Optional[str] # backend will compute this if not provided
-    email: EmailStr
-    phone_number: str           # using string for phone numbers
-    date_of_birth: date         # using date type for date fields
-    residence_address:Optional[str]
-    residence_city:Optional[str]
-    residence_state:Optional[str]
-    residence_zip_code:Optional[str]
-    residence_country:Optional[str]
-    degree: Optional[str]
-    major: Optional[str]
-    school: Optional[str]
-    school_start_date:Optional[date]=None           # using date type for date fields
-    school_end_date: Optional[date]=None             # using date type for date fields
-    currently_studying:Optional[bool]=False
-    school_address: Optional[str]
-    school_city:Optional[str]
-    school_state:Optional[str]
-    school_zip_code:Optional[str]
-    school_country:Optional[str]
-    cgpa: Optional[float]
-    company_name: Optional[str]
-    job_name: Optional[str]
-    job_start_date:Optional[date]=None
-    job_end_date:Optional[date]=None
-    currently_working:Optional[bool]=False
-    job_address:Optional[str]
-    job_city:Optional[str]
-    job_state:Optional[str]
-    job_zip_code:Optional[str]
-    job_country:Optional[str]
-    job_duties:Optional[str]
-    skills:Optional[str]
-    job_titles: Optional[str]            # corrected spelling to match the model
-    linkedin:Optional[str]
-    github:Optional[str]
-    portfolio:Optional[str]
-    resume:Optional[str] #store the path or URl
-    need_sponsorship:Optional[bool]=False
-    veteran: Optional[bool]=False
-    disability:Optional[bool]=False
-    locations:Optional[str]
-    race:Optional[str]
-    gender:Optional[str]
-    user_id: Optional[int] = None             # ensures you receive the user id from your auth layer
+
+def candidate_to_dict(c: Candidate):
+    """Serialize Candidate + children to dict for JSON response."""
+    return {
+        "user_id": c.user_id,
+        "first_name": c.first_name,
+        "middle_name": c.middle_name,
+        "last_name": c.last_name,
+        "full_name": c.full_name,
+        "email": c.email,
+        "phone_number": c.phone_number,
+        "date_of_birth": c.date_of_birth,
+        "residence_address": c.residence_address,
+        "residence_city": c.residence_city,
+        "residence_state": c.residence_state,
+        "residence_zip_code": c.residence_zip_code,
+        "residence_country": c.residence_country,
+        "skills": c.skills,
+        "job_titles": c.job_titles,
+        "linkedin": c.linkedin,
+        "github": c.github,
+        "portfolio": c.portfolio,
+        "resume": c.resume,
+        "need_sponsorship": c.need_sponsorship,
+        "veteran": c.veteran,
+        "disability": c.disability,
+        "locations": c.locations,
+        "race": c.race,
+        "gender": c.gender,
+        "message_to_hiring_manager": c.message_to_hiring_manager,
+        "educations": [
+            {
+                "id": e.id,
+                "degree": e.degree,
+                "major": e.major,
+                "school": e.school,
+                "start_date": e.start_date,
+                "end_date": e.end_date,
+                "currently_studying": e.currently_studying,
+                "address": e.address,
+                "city": e.city,
+                "state": e.state,
+                "zip_code": e.zip_code,
+                "country": e.country,
+                "cgpa": float(e.cgpa) if e.cgpa is not None else None,
+            }
+            for e in c.educations
+        ],
+        "experiences": [
+            {
+                "id": x.id,
+                "company_name": x.company_name,
+                "job_name": x.job_name,
+                "start_date": x.start_date,
+                "end_date": x.end_date,
+                "currently_working": x.currently_working,
+                "address": x.address,
+                "city": x.city,
+                "state": x.state,
+                "zip_code": x.zip_code,
+                "country": x.country,
+                "job_duties": x.job_duties,
+            }
+            for x in c.experiences
+        ],
+    }
+
+
+@router.get("/candidate")
+def get_candidate(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    cand = db.query(Candidate).filter(Candidate.user_id == user_id).first()
+    if not cand:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate data not found")
+    return candidate_to_dict(cand)
+
 
 @router.post("/candidate")
-def create_candidate(candidate: CandidateCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)): #current user is now dictionary.
+def upsert_candidate(
+    payload: CandidateUpsert,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
 
-    #manually convert date from str to obj.
-    try:
-        if isinstance (candidate.date_of_birth, str):
-            candidate.date_of_birth = datetime.datetime.strptime(candidate.date_of_birth, "%Y-%m-%d").date()
+    # Basic candidate row
+    cand = db.query(Candidate).filter(Candidate.user_id == user_id).first()
+    creating = False
+    if not cand:
+        creating = True
+        cand = Candidate(user_id=user_id)
+
+    # Fill scalars (no children here)
+    cand.first_name = payload.first_name
+    cand.middle_name = payload.middle_name
+    cand.last_name = payload.last_name
+    cand.full_name = payload.full_name or f"{payload.first_name} {payload.middle_name or ''} {payload.last_name}".strip()
+    cand.email = payload.email
+    cand.phone_number = payload.phone_number
+    cand.date_of_birth = payload.date_of_birth
+
+    cand.residence_address = payload.residence_address
+    cand.residence_city = payload.residence_city
+    cand.residence_state = payload.residence_state
+    cand.residence_zip_code = payload.residence_zip_code
+    cand.residence_country = payload.residence_country
+
+    cand.skills = payload.skills
+    cand.job_titles = payload.job_titles
+    cand.linkedin = payload.linkedin
+    cand.github = payload.github
+    cand.portfolio = payload.portfolio
+    cand.resume = payload.resume
+    cand.need_sponsorship = bool(payload.need_sponsorship)
+    cand.veteran = bool(payload.veteran)
+    cand.disability = bool(payload.disability)
+    cand.locations = payload.locations
+    cand.race = payload.race
+    cand.gender = payload.gender
+    cand.message_to_hiring_manager = payload.message_to_hiring_manager
+
+    if creating:
+        db.add(cand)
+        db.flush()  # ensure it’s persistent before attaching children
+
+    # ----- Sync children (upsert-by-id, delete-missing) -----
+    # EDUCATIONS
+    existing_edu = {e.id: e for e in cand.educations}
+    seen_edu_ids = set()
+
+    for item in payload.educations:
+        if item.id and item.id in existing_edu:
+            e = existing_edu[item.id]
+            e.degree = item.degree
+            e.major = item.major
+            e.school = item.school
+            e.start_date = item.start_date
+            e.end_date = item.end_date
+            e.currently_studying = bool(item.currently_studying)
+            e.address = item.address
+            e.city = item.city
+            e.state = item.state
+            e.zip_code = item.zip_code
+            e.country = item.country
+            e.cgpa = item.cgpa
+            seen_edu_ids.add(item.id)
         else:
-            candidate.date_of_birth = candidate.date_of_birth
-        if isinstance(candidate.job_start_date, str):
-            candidate.job_start_date = datetime.datetime.strptime(candidate.job_start_date, "%Y-%m-%d").date()
+            e = Education(
+                candidate_user_id=cand.user_id,
+                degree=item.degree,
+                major=item.major,
+                school=item.school,
+                start_date=item.start_date,
+                end_date=item.end_date,
+                currently_studying=bool(item.currently_studying),
+                address=item.address,
+                city=item.city,
+                state=item.state,
+                zip_code=item.zip_code,
+                country=item.country,
+                cgpa=item.cgpa,
+            )
+            db.add(e)
+            db.flush()
+            seen_edu_ids.add(e.id)
+
+    for edu_id, edu in list(existing_edu.items()):
+        if edu_id not in seen_edu_ids:
+            db.delete(edu)
+
+    # EXPERIENCES
+    existing_exp = {x.id: x for x in cand.experiences}
+    seen_exp_ids = set()
+
+    for item in payload.experiences:
+        if item.id and item.id in existing_exp:
+            x = existing_exp[item.id]
+            x.company_name = item.company_name
+            x.job_name = item.job_name
+            x.start_date = item.start_date
+            x.end_date = item.end_date
+            x.currently_working = bool(item.currently_working)
+            x.address = item.address
+            x.city = item.city
+            x.state = item.state
+            x.zip_code = item.zip_code
+            x.country = item.country
+            x.job_duties = item.job_duties
+            seen_exp_ids.add(item.id)
         else:
-            candidate.job_start_date = candidate.job_start_date
-        if isinstance(candidate.job_end_date, str):
-            candidate.job_end_date = datetime.datetime.strptime(candidate.job_end_date, "%Y-%m-%d").date()
-        else:
-            candidate.job_end_date = candidate.job_end_date
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"invalid date format: {e}")
-    if not candidate.full_name:
-        candidate.full_name=f"{candidate.first_name} {candidate.middle_name} {candidate.last_name}".strip()
-    # Check if candidate exists, then update or create new record.
-    db_candidate = db.query(Candidate).filter(Candidate.user_id == current_user['user_id']).first()
-    if db_candidate:
-        # Update Candidate details
-        db_candidate.first_name = candidate.first_name
-        db_candidate.middle_name = candidate.middle_name
-        db_candidate.last_name = candidate.last_name
-        db_candidate.full_name = candidate.full_name
-        db_candidate.email = candidate.email
-        db_candidate.phone_number = candidate.phone_number
-        db_candidate.date_of_birth = candidate.date_of_birth
-        db_candidate.residence_address=candidate.residence_address
-        db_candidate.residence_city = candidate.residence_city
-        db_candidate.residence_state=candidate.residence_state
-        db_candidate.residence_zip_code=candidate.residence_zip_code
-        db_candidate.residence_country=candidate.residence_country
-        db_candidate.degree = candidate.degree
-        db_candidate.major = candidate.major
-        db_candidate.school = candidate.school
-        db_candidate.school_start_date = candidate.school_start_date
-        db_candidate.school_end_date = candidate.school_end_date
-        db_candidate.currently_studying = candidate.currently_studying
-        db_candidate.school_address=candidate.school_address
-        db_candidate.school_city = candidate.school_city
-        db_candidate.school_state=candidate.school_state
-        db_candidate.school_zip_code=candidate.school_zip_code
-        db_candidate.school_country=candidate.school_country
-        db_candidate.cgpa = candidate.cgpa
-        db_candidate.company_name = candidate.company_name
-        db_candidate.job_name = candidate.job_name
-        db_candidate.job_start_date = candidate.job_start_date
-        db_candidate.job_end_date = candidate.job_end_date
-        db_candidate.currently_working = candidate.currently_working
-        db_candidate.job_address=candidate.job_address
-        db_candidate.job_city = candidate.job_city
-        db_candidate.job_state=candidate.job_state
-        db_candidate.job_zip_code=candidate.job_zip_code
-        db_candidate.job_country=candidate.job_country
-        db_candidate.job_duties=candidate.job_duties
-        db_candidate.skills = candidate.skills
-        db_candidate.job_titles = candidate.job_titles
-        db_candidate.linkedin=candidate.linkedin
-        db_candidate.github=candidate.github
-        db_candidate.portfolio=candidate.portfolio
-        db_candidate.resume=candidate.resume
-        db_candidate.need_sponsorship=candidate.need_sponsorship
-        db_candidate.veteran=candidate.veteran
-        db_candidate.disability=candidate.disability
-        db_candidate.locations=candidate.locations
-        db_candidate.race=candidate.race
-        db_candidate.gender=candidate.gender
-        db_candidate.user_id = current_user["user_id"]
-    else:
-        db_candidate = Candidate(
-            first_name=candidate.first_name,
-            middle_name=candidate.middle_name,
-            last_name=candidate.last_name,
-            full_name=f"{candidate.first_name} {candidate.middle_name} {candidate.last_name}",
-            email=candidate.email,
-            phone_number=candidate.phone_number,
-            date_of_birth=candidate.date_of_birth,
-            residence_address=candidate.residence_address,
-            residence_city = candidate.residence_city,
-            residence_state=candidate.residence_state,
-            residence_zip_code=candidate.residence_zip_code,
-            residence_country=candidate.residence_country,
-            degree=candidate.degree,
-            major=candidate.major,
-            school=candidate.school,
-            school_start_date=candidate.school_start_date,
-            school_end_date=candidate.school_end_date,
-            currently_studying = candidate.currently_studying,
-            school_address=candidate.school_address,
-            school_city = candidate.school_city,
-            school_state=candidate.school_state,
-            school_zip_code=candidate.school_zip_code,
-            school_country=candidate.school_country,
-            cgpa=candidate.cgpa,
-            company_name=candidate.company_name,
-            job_name=candidate.job_name,
-            job_city = candidate.job_city,
-            job_state=candidate.job_state,
-            job_zip_code=candidate.job_zip_code,
-            job_country=candidate.job_country,
-            job_duties=candidate.job_duties,
-            skills = candidate.skills,
-            job_titles=candidate.job_titles,
-            linkedin=candidate.linkedin,
-            github=candidate.github,
-            portfolio=candidate.portfolio,
-            resume=candidate.resume,
-            need_sponsorship=candidate.need_sponsorship,
-            veteran=candidate.veteran,
-            disability=candidate.disability,
-            locations=candidate.locations,
-            race=candidate.race,
-            gender=candidate.gender,
-            user_id=current_user['user_id'] #set from token payload
-        )
-        db.add(db_candidate)
+            x = Experience(
+                candidate_user_id=cand.user_id,
+                company_name=item.company_name,
+                job_name=item.job_name,
+                start_date=item.start_date,
+                end_date=item.end_date,
+                currently_working=bool(item.currently_working),
+                address=item.address,
+                city=item.city,
+                state=item.state,
+                zip_code=item.zip_code,
+                country=item.country,
+                job_duties=item.job_duties,
+            )
+            db.add(x)
+            db.flush()
+            seen_exp_ids.add(x.id)
+
+    for exp_id, exp in list(existing_exp.items()):
+        if exp_id not in seen_exp_ids:
+            db.delete(exp)
+
+    # commit
     try:
         db.commit()
-        db.refresh(db_candidate)
-        return {"message": "Candidate data saved successfully","candidate": db_candidate.user_id}
     except Exception as e:
         db.rollback()
-        logging.error(f"Error saving candidate data: {e}", exc_info=True) #exc_info=True argumnet will include the full traceback of the exception log.
-        raise HTTPException(status_code = 500, detail="Eror Saving Candidate data")
-        
-@router.get("/candidate")
-def get_candidate(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    user_id = current_user['user_id']
-    logging.info(f'Retrieving candidate data for user_id: {user_id}')
-    db_candidate = db.query(Candidate).filter(Candidate.user_id == current_user['user_id']).first()
-    if db_candidate:
-        logging.info(f'candidate data found')
-        data ={
-            column.name: getattr(db_candidate,column.name)
-            for column in Candidate.__table__.columns
-        }
-        return CandidateCreate(**data) 
-        #return CandidateCreate(**db_candidate.__dict__)
-    else:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate data not found")
+        logging.exception("Error saving candidate data")
+        raise HTTPException(status_code=500, detail="Error saving candidate data")
+
+    db.refresh(cand)
+    return {"message": "Candidate saved", "candidate": candidate_to_dict(cand)}
+
+
 @router.post("/upload-resume")
-async def upload_resume(file:UploadFile=File(...)):
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER)
-    #filename = f"{uuid.uuid4()}_{file.filename}"
-    filename = f"{file.filename}"
-    filepath = os.path.join(UPLOAD_FOLDER,filename) # save physically here
-    resume_path = f"/uploads/{filename}" #public URL or path:
-    #filepath = os.path.join(UPLOAD_FOLDER,filename)
-    with open(filepath,"wb") as f:
-        content = await file.read()
-        f.write(content)
-    response = JSONResponse(content={"resume": resume_path})
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers['Access-Control-Allow-Credentials'] = 'true'
+async def upload_resume(file: UploadFile = File(...)):
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    # safer unique filename (preserve extension)
+    name, ext = os.path.splitext(file.filename or "")
+    ext = ext.lower()
+    if ext not in ALLOWED_EXT:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+    filename = f"{uuid.uuid4().hex}{ext}"
+    path = os.path.join(UPLOAD_FOLDER, filename)
 
-    return response
-@router.get('/uploads/{filename}')
+    with open(path, "wb") as f:
+        f.write(await file.read())
 
+    # Path your frontend already expects:
+    return JSONResponse(content={"resume": f"/uploads/{filename}"})
+
+
+@router.get("/uploads/{filename}")
 async def serve_resume(filename: str):
-    file_path = os.path.join('uploads,filename')
-
+    file_path = os.path.join(UPLOAD_FOLDER, filename)   # <-- fixed join
     if not os.path.exists(file_path):
-        return JSONResponse(status_code = 404, content={'message': 'file not found'})
-    
-    response = FileResponse(file_path, media_type = 'application/octet-stream')
-    response.headers['Access-Control-Allow-Origin'] = "*"
-    response.headers['Access-Control-Allow-Credentials'] = 'true'
-    return response
-
-
+        return JSONResponse(status_code=404, content={"message": "file not found"})
+    # Let Starlette infer content-type
+    return FileResponse(file_path, filename=filename)

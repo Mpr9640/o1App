@@ -84,7 +84,8 @@ def run_migrations_online() -> None:
             context.run_migrations()
 
 from db import Base
-from models import User
+from models import User, Candidate, Education,Experience
+from models1.jobs import JobStatus, JobApplication
 target_metadata = Base.metadata
 if context.is_offline_mode():
     run_migrations_offline()

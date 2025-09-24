@@ -1,5 +1,4 @@
 body {
-  margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
@@ -10,4 +9,21 @@ body {
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
+} 
+
+/* Reset & base */
+* { box-sizing: border-box; }
+a { color: inherit; } 
+
+/* OPTIONAL: prevent horizontal scroll if anything overflows */
+html, body { overflow-x: hidden; }
+/* Ensure the app can stretch edge-to-edge */
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
 }
+
+

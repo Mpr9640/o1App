@@ -1,209 +1,251 @@
-/*export function tokenize(text){
-    return text.toLowerCase().split(/\W+/).filter(Boolean);
-}*/
-// A simple stop word list (you can expand this significantly)
-export function tokenize(text){
-    return text.toString().toLowerCase().replace(/\s/g, '').trim();
-}
-/*export const stopWords = new Set([
-    "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "to", "of", "in", "for",
-    "on", "with", "as", "by", "at", "from", "be", "have", "has", "had", "do", "does", "did",
-    "will", "would", "can", "could", "may", "might", "must", "should", "we", "you", "he",
-    "she", "it", "they", "this", "that", "these", "those", "etc", "experience", "skills",
-    "ability", "work", "strong", "knowledge", "proven", "demonstrated", "years", 
-    "plus", "required", "preferred", "role", "responsibilities",
-    "design", "manage", "build", "implement", "support", "collaborate", "ensure", "drive",
-    "understand", "excellent", "good", "new", "senior", "junior", "lead", "team", "solutions",
-    "system", "systems","technical", "business", "client",
-    "clients", "product", "products", "project", "projects", "tools", "technologies", "technology",
-    "framework", "frameworks", "environment", "environments", "applications", "application",
-    "across", "within", "through", "upon", "about", "also", "just", "then", "its", "our", "their",
-    "your", "us", "him", "her", "them", "which", "what", "where", "when", "why", "how", "such",
-    "only", "very", "much", "more", "most", "less", "least", "well", "out", "up", "down", "off",
-    "on", "about", "into", "onto", "from", "for", "against", "among", "amongst", "around", "behind",
-    "below", "beneath", "beside", "besides", "between", "beyond", "during", "except", "inside",
-    "like", "near", "outside", "over", "past", "since", "than", "until", "upon", "without",
-    "worth", "along", "amid", "amidst", "around", "concerning", "despite", "excepting",
-    "following", "including", "instead", "minus", "outside", "per", "plus", "regarding",
-    "save", "toward", "towards", "under", "unlike", "versus", "via", "within", "without","type","language",
-    "technology","technologies","server",
+// scripts/skillmatching.js — lexicon/regex extractor + canonicalizer + fuzzy match (dedup fixed)
+
+/* ---------------- Taxonomy ---------------- */
+
+let CLIENT_TAXONOMY = new Set([
+  // Languages
+  "javascript","typescript","python","java","go","golang","c","c++","c#","ruby","php",
+  "swift","kotlin","rust","scala","r","matlab","bash","powershell","backend","frontend","fullstack",
+  // Web/UI
+  "html","css","sass","less","tailwind","bootstrap","react","react native","next.js",
+  "angular","vue","svelte","redux","graphql","rest","rest api","websocket",
+  "ui/ux design","mobile development","ios","android",
+  // Backend
+  "node","node.js","express","django","flask","fastapi",".net","spring","spring boot","laravel","rails",
+  // DevOps/Cloud
+  "docker","kubernetes","k8s","helm","terraform","ansible","chef","puppet","jenkins","github actions","gitlab ci","circleci",
+  "aws","amazon web services","azure","microsoft azure","gcp","google cloud platform",
+  "lambda","ec2","s3","rds","dynamodb","cloudformation","cloudfront","vpc","iam","ecs","eks","fargate",
+  "devops","systems administration","network configuration","troubleshooting","windows server","virtualization","ci/cd","sdlc",
+  // Data/DB
+  "postgresql","postgres","mysql","mariadb","sqlite","mongodb","redis","elasticsearch","cassandra","oracle","mssql","ms sql",
+  "snowflake","redshift","bigquery","kafka","rabbitmq","sql","nosql",
+  // Data/ML
+  "pandas","numpy","scikit-learn","sklearn","pytorch","tensorflow","keras","xgboost","lightgbm","opencv",
+  "machine learning","deep learning","nlp","natural language processing","transformers","huggingface","llm","spark","hadoop","databricks","airflow",
+  "artificial intelligence","data visualization","tableau","power bi",
+  // Testing/QA
+  "jest","mocha","junit","pytest","cypress","playwright","quality control",
+  // Tools
+  "linux","git","github","gitlab","bitbucket","postman","swagger","openapi","vscode","intellij","jira","confluence",
+  // Soft/other (select, not all)
+  "agile","scrum","kanban","leadership","project management","collaboration","organization","technical design","control systems","public health"
 ]);
 
-
-export function removeStopWords(tokens){
-    return tokens.filter(token =>!stopWords.has(token));
-}
-export function stemWord(word){
-    if(word.endsWith('ing')) return word.slice(0,-3);
-    if(word.endsWith('ed')) return word.slice(0,-2);
-    return word;
-}
-export function stemTokens(tokens){
-    return tokens.map(stemWord);
-}*/
-export function extractKeywords(text){
-    let tokens = tokenize(text);
-    console.log('tokenized text',tokens);
-    //tokens = removeStopWords(tokens);
-    //console.log('after removing stop words',tokens);
-    //tokens = stemTokens(tokens);
-    //console.log('After stemming',tokens);
-    //return new Set(tokens);
-    return tokens;
-}
-// --- Predefined Skill List for Filtering ---
-/*export const predefinedSkillsList = new Set([
-    "machine","ml","python", "java","c++", "javascript","js",
-    "go", "ruby", "swift", "kotlin", "php", "rust", "typescript", "script",
-    "c#", "web", "html", "css", "react", "angular",
-    "vue.js",".net" ,"node.js", "express.js", "django", "flask", "ruby",
-    "cloud", "aws", "azure", "google cloud platform ","gcp","psql",
-    "database", "sql", "mysql", "postgresql", "mongodb", "cassandra",
-    "redis", "oracle","data science", "machine learning",
-    "r", "pandas", "numpy", "scikit-learn", "tensorflow", "keras", "pytorch",
-    "data visualization", "statistical modeling", "predictive analytics",
-    "devops", "ci/cd", "docker", "kubernetes", "jenkins", "gitlab ci",
-    "github actions", "ansible", "terraform", "operating systems", "linux",
-    "windows server", "macos", "networking", "tcp/ip", "dns", "routing", "firewalls",
-    "vpns", "cybersecurity", "penetration testing", "incident response", "network security",
-    "cryptography", "compliance", "mobile development", "ios", "android", "react native",
-    "flutter", "version control", "git", "github", "gitlab", "bitbucket", "apis",
-    "restful", "soap", "graphql", "software development life cycle", "sdlc",
-    "testing", "unit testing", "integration testing", "end-to-end testing",
-    "qa", "cloud security", "big data technologies", "hadoop", "spark", "kafka",
-    "communication", "verbal", "written", "active listening", "teamwork", "collaboration",
-    "problem-solving", "critical thinking", "adaptability", "flexibility", "time management",
-    "organization", "leadership", "conflict resolution", "emotional intelligence",
-    "interpersonal skills", "networking", "mentoring", "negotiation", "empathy", "persuasion",
-    "presentation skills", "feedback", "coaching", "active listening", "project management",
-    "agile", "scrum", "waterfall", "pmp", "prince2", "strategic planning", "budgeting", "financial management",
-    "risk management", "change management", "process improvement", "business analysis", "market research",
-    "customer relationship management", "crm", "sales", "marketing strategy",
-    "data analysis", "reporting", "performance management", "resource allocation",
-    "stakeholder management", "decision-making", "vendor management",
-    "supply chain management", "graphic design", "adobe creative suite",
-    "photoshop", "illustrator", "indesign", "ui/ux design", "user interface",
-    "user experience", "wireframing", "prototyping", "figma", "sketch", "adobe xd",
-    "content creation", "writing", "video production", "photography", "storytelling",
-    "creative thinking", "illustration", "animation", "web design", "visual", "layout",
-    "branding", "statistical analysis", "data cleaning", "preprocessing", "data visualization",
-    "tableau", "power bi", "d3.js", "database management", "sql querying", "spreadsheet software",
-    "microsoft excel", "google sheets", "pivot tables", "vlookup", "a/b testing", "reporting",
-    "business intelligence", "bi", "etl", "extract", "transform", "load", "research skills",
-    "foreign languages", "public speaking", "customer service", "troubleshooting",
-    "training", "development", "attention to detail", "work ethic", "integrity", "initiative",
-    "adaptability to new technologies", "learning agility"
-]); */
-export const predefinedSkillsList = new Set([
-    "machinelearn","ml","python", "java","c++", "javascript","js",
-    "go", "ruby", "swift", "kotlin", "php", "rust", "typescript","scripting",
-    "c#", "web", "html", "css", "react", "angular","bashing",
-    "vue",".net" ,"node", "express", "django", "flask", "ruby",
-    "cloud", "aws", "azure", "googlecloudplatform ","gcp","psql",
-    "database", "sql", "mysql", "postgresql", "mongodb", "cassandra",
-    "redis", "oracle","datascience", "network","science",
-    "r", "pandas", "numpy", "scikitlearn", "tensorflow", "keras", "pytorch",
-    "datavisualization", "statisticalmodel", "predictiveanalytics",
-    "devops", "ci/cd", "ci","cd","docker", "kubernetes", "jenkins", "gitlab ci",
-    "github actions", "ansible", "terraform", "operatingsystem","os", "linux",
-    "windowsserver", "macos", "network", "tcp/ip", "dns", "routing", "firewall",
-    "vpns", "cybersecurity", "penetrationtest", "incidentresponse", "networksecurity",
-    "cryptography", "compliance", "mobiledevelopment", "ios", "android", "native",
-    "flutter", "versioncontrol", "git", "github", "gitlab", "bitbucket", "apis",
-    "restful", "soap", "graphql", "softwaredevelopmentlifecycle", "sdlc",
-    "testing", "unittesting", "integrationtesting", "endtoendtesting",
-    "qa", "cloudsecurity", "bigdatatechnologies", "hadoop", "spark", "kafka",
-    "communication", "verbal", "written", "activelisten", "teamwork", "collaboration",
-    "problem-solving", "criticalthink", "adaptability", "flexibility", "timemanage",
-    "organization", "leadership", "conflictresolution", "emotionalintelligence",
-    "interpersonalskill", "networking", "mentoring", "negotiation", "empathy", "persuasion",
-    "presentationskill", "feedback", "coaching", "activelisten", "projectmanage",
-    "agile", "scrum", "waterfall", "pmp", "prince2", "strategicplan", "budgeting", "financialmanage",
-    "riskmanage", "changemanage", "processimprove", "businessanalysis", "marketresearch",
-    "customerrelationshipmanage", "crm", "sales", "marketingstrategy",
-    "dataanalysis", "reporting", "performancemanagement", "resourceallocation",
-    "stakeholdermanage", "decisionmaking", "vendormanage","ui","ux",
-    "supplychainmanage", "graphicdesign", "adobecreativesuite",
-    "photoshop", "illustrator", "indesign", "ui/uxdesign", "userinterface",
-    "userexperience", "wirefram", "prototyp", "figma", "sketch", "adobexd",
-    "content creation", "writing", "videoproduction", "photography", "storytelling",
-    "creativethink", "illustration", "animation", "webdesign", "visual", "layout",
-    "branding", "statisticalanalysis", "datacleaning", "preprocessing", "datavisualization",
-    "tableau", "powerbi", "d3.js", "databasemanagement", "sqlquery", "spreadsheetsoftware",
-    "microsoftexcel", "googlesheet", "pivottable", "vlookup", "a/btest", "report",
-    "businessintelligence", "powerbi", "etl", "extract", "transform", "load", "researchskill",
-    "foreignlanguage", "publicspeak", "customerservice", "troubleshoot",
-    "train", "softwaredevelop", "attention", "workethic", "integrity", "initiative",
-    "adaptability", "learningagility","softwareengineer"
+// Canonical synonyms (short, human forms — no weird expansions)
+const SYN = new Map([
+  ["js","javascript"], ["ts","typescript"],
+  ["nodejs","node.js"], ["reactjs","react"], ["angularjs","angular"],
+  ["dotnet",".net"], ["gh actions","github actions"],
+  ["postgres","postgresql"], ["psql","postgresql"], ["ms sql","mssql"],
+  ["k8s","kubernetes"],
+  ["aws","amazon web services"], ["gcp","google cloud platform"], ["azure","microsoft azure"],
+  ["ci/cd","ci/cd"],
+  ["ml","machine learning"], ["ai","artificial intelligence"], ["nlp","natural language processing"],
+  ["cad","computer-aided design"], ["fea","finite element analysis"], ["gd&t","geometric dimensioning and tolerancing"],
+  ["plc","programmable logic controllers"], ["iot","internet of things"],
+  // keep simple common names for these
+  ["sql","sql"], ["nosql","nosql"], ["css","css"]
 ]);
 
-/*export function getRecognizedSkills(processedKeywords){
-    const recognizedSkills = new Set();
-    for(const keyword of processedKeywords){
-        if(predefinedSkillsList.has(keyword)){
-            recognizedSkills.add(keyword);
-        }
-    }
-    console.log('recognizedSkills',recognizedSkills);
-    return recognizedSkills;
-}*/
-export function getRecognizedSkills(tokens){
-    const recognizedSkills = new Set();
-    for(const keyword of predefinedSkillsList){
-        if(tokens.includes(keyword)){
-            recognizedSkills.add(keyword);
-        }
-    }
-    console.log('recognized skills',recognizedSkills);
-    return recognizedSkills;
+const STOP = new Set([
+  "a","about","above","after","again","against","all","am","an","and","any","are","as","at","be","because","been","before","being",
+  "below","between","both","but","by","did","do","does","doing","down","during","each","few","for","from","further","had","has","have",
+  "having","he","her","here","hers","him","his","how","i","if","in","into","is","it","its","itself","me","more","most","my","myself","no",
+  "nor","not","of","off","on","once","only","or","other","our","ours","ourselves","out","over","own","same","she","should","so","some",
+  "such","than","that","the","their","theirs","them","themselves","then","there","these","they","this","those","through","to","too",
+  "under","until","up","very","was","we","were","what","when","where","which","while","who","whom","why","with","would","you","your",
+  "yours","yourself","yourselves"
+]);
+
+/* ------------- TTL / remote refresh (unchanged API) ------------- */
+const TAX_TTL_MS = 12 * 60 * 60 * 1000; // 12h
+export async function refreshTaxonomyIfStale() {
+  try {
+    const { taxonomyMeta } = await chrome.storage.local.get('taxonomyMeta');
+    const stale = !taxonomyMeta || (Date.now() - (taxonomyMeta.ts || 0)) > TAX_TTL_MS;
+    if (stale) { await chrome.storage.local.set({ taxonomyMeta: { ts: Date.now() } }); }
+    return stale;
+  } catch { return false; }
 }
-export async function getSkillsFromStorage() {
-    return new Promise((resolve) => {
-        chrome.storage.local.get('autofillData', (result) => {
-            if (result && result.autofillData && typeof result.autofillData.skills === 'string') {
-                const skillsString = result.autofillData.skills;
-                const skillsList = skillsString.split(',')
-                                               .map(skill => skill.trim().toLowerCase().replace(/\s/g, '')) // Trim whitespace and lowercase for consistent matching
-                                               .filter(skill => skill !== ''); // Remove empty strings
-
-                const skillsSet = new Set(skillsList);
-                console.log('userSkills',skillsSet);
-                resolve(skillsSet);
-            } else {
-                console.warn("User skills not found or not in expected format in chrome.storage.local.autofillData.skills");
-                resolve(null);
-            }
-        });
-    });
-}
-export function findIntersection(setA,setB){
-    const intersection = new Set();
-    for(const item of setA){
-        if(setB.has(item)){
-            intersection.add(item);
-        }
+export function setRemoteTaxonomy(skills = [], synonyms = {}) {
+  try {
+    if (Array.isArray(skills) && skills.length) CLIENT_TAXONOMY = new Set(skills.map(s => String(s).toLowerCase().trim()));
+    if (synonyms && typeof synonyms === 'object') {
+      for (const [k,v] of Object.entries(synonyms)) SYN.set(String(k).toLowerCase().trim(), String(v).toLowerCase().trim());
     }
-    return intersection;
-}
-export function calculateSkillsMatchingPercentage(jobRecognizedSkills,userSkillSet){
-    if(!userSkillSet || userSkillSet.size === 0){
-        console.log('No user skills found');
-        return 0;
-    }
-    else if(jobRecognizedSkills.size === 0){
-        console.log('No jobFinalKeywords.')
-        return 0;
-    }
-    const matchedWords = findIntersection(jobRecognizedSkills, userSkillSet);
-    const matchingPercentage = (matchedWords.size /jobRecognizedSkills.size)*100;
-
-    console.log(`Matched Skills: ${[...matchedWords].join(',')}`);
-    console.log(`Job recognized Skills Count: ${jobRecognizedSkills.size}`);
-    console.log(`User Skills Count: ${userSkillSet.size}`);
-    console.log(`Matching Percentage: ${matchingPercentage.toFixed(2)}%`);
-
-    return matchingPercentage;
-
-
+  } catch {}
 }
 
+/* ---------------- Canonicalization ---------------- */
+
+const LEADING_FILLER_RX = /^(?:as|such as|including|include|with|using|use of|hands[\s-]*on|experience (?:with|in|of)|ideally with|familiar(?:ity)? with|knowledge of|proficiency in|skills in|code|coding in)\s+/i;
+const TRAILING_FILLER_RX = /\s+(?:experience|skills|background|knowledge|proficiency|expertise)\s*$/i;
+
+function clampSpaces(s){ return s.replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim(); }
+
+export function normalizeSkill(s) {
+  let x = clampSpaces((s || "").toLowerCase());
+  x = x.replace(/[()]/g, "");
+  x = x.replace(/\b(c)\s*(\+\+)\b/g, "c++");
+  x = x.replace(/\b(c)\s*(sharp)\b/g, "c#");
+  x = x.replace(/\b(node)\s*\.?\s*js\b/g, "node.js");
+  x = x.replace(/\b(java)\s*\.?\s*script\b/g, "javascript");
+  x = x.replace(LEADING_FILLER_RX, "");
+  x = x.replace(TRAILING_FILLER_RX, "");
+  x = clampSpaces(x);
+  const syn = SYN.get(x);
+  if (syn) x = syn;
+  return x.trim();
+}
+
+/* If a phrase contains a known taxonomy/keeper token, reduce to that token */
+const TAX_ARRAY = Array.from(CLIENT_TAXONOMY).sort((a,b)=>b.length-a.length);
+function escapeRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+
+function reduceToCanonicalToken(phrase) {
+  const p = normalizeSkill(phrase);
+  if (!p) return "";
+  // Fast exits
+  if (CLIENT_TAXONOMY.has(p)) return p;
+
+  for (const term of TAX_ARRAY) {
+    const re = new RegExp(`\\b${escapeRe(term)}\\b`, 'i');
+    if (re.test(p)) return normalizeSkill(term);
+  }
+
+  // Keeper patterns → canonical forms
+  if (/\bnode\.?js\b/i.test(p)) return "node.js";
+  if (/\baws\b|\bamazon web services\b/i.test(p)) return "amazon web services";
+  if (/\bazure\b|\bmicrosoft azure\b/i.test(p)) return "microsoft azure";
+  if (/\bgcp\b|\bgoogle cloud( platform)?\b/i.test(p)) return "google cloud platform";
+  if (/\bci\/cd\b/i.test(p)) return "ci/cd";
+
+  return p;
+}
+
+/* ---------------- Extractor ---------------- */
+
+const KEEPER_PATTERNS = [
+  /c\+\+/i, /\bc#\b/i, /\b\.net\b/i, /\bnode\.?js\b/i,
+  /\brest(\s*api)?\b/i, /\bgraphql\b/i, /\bci\/cd\b/i,
+  /\bkubernetes\b|\bk8s\b/i, /\baws\b|\bamazon web services\b/i, /\bazure\b|\bmicrosoft azure\b/i, /\bgcp\b|\bgoogle cloud\b/i
+];
+
+function looksLikeSkillPhrase(phrase) {
+  if (CLIENT_TAXONOMY.has(phrase)) return true;
+  if (KEEPER_PATTERNS.some(rx => rx.test(phrase))) return true;
+  return false;
+}
+function looksLikeToken(tok) {
+  if (!tok || STOP.has(tok)) return false;
+  if (/[+#./]/.test(tok)) return true;
+  if (/\d/.test(tok)) return true;
+  if (/^[a-z]{2,}$/.test(tok) === false) return true;
+  return tok.length >= 3;
+}
+function ngrams(words, nMax = 3) {
+  const out = [];
+  for (let n=1; n<=Math.min(nMax, words.length); n++) {
+    for (let i=0; i+n<=words.length; i++) out.push(words.slice(i,i+n).join(' '));
+  }
+  return out;
+}
+
+// section-aware boost keywords
+const SECTION_HEAD_RX = /(requirements|qualifications|skills|tech\s*stack|nice\s*to\s*have|preferred|responsibilities|what\s+you(?:'|’)?ll\s+do|what\s+you\s+will\s+do)/i;
+
+function splitCandidates(line) {
+  const parts = line
+    // include '.' in the splitter to break "also considered.hands"
+    .split(/[•·\-\u2013\u2014,*;:|/·.]+|(?:\s(?:and|or)\s)/i)
+    .map(p => p.trim()).filter(Boolean);
+
+  const out = [];
+  for (const p of parts) {
+    let words = p.split(/\s+/)
+      .map(w => w.replace(/^[^a-z0-9+#.]+|[^a-z0-9+#.]+$/gi, ""))
+      .filter(Boolean)
+      .map(normalizeSkill)
+      .filter(Boolean);
+
+    // Drop leading generic adjectives (already handled in normalizeSkill but keep a safety loop)
+    while (words[0] && /^(experience|experiences|proficient|knowledge|familiar|hands-on|strong|solid|working|as|such|with|using|including)$/i.test(words[0])) {
+      words.shift();
+    }
+
+    const grams = ngrams(words, 3).map(reduceToCanonicalToken);
+    for (const g of grams) {
+      if (!g || STOP.has(g)) continue;
+      const tokens = g.split(" ");
+      if (!tokens.some(looksLikeToken)) continue;
+      if (looksLikeSkillPhrase(g)) out.push(g);
+    }
+  }
+  return out;
+}
+
+// Returns Set of canonical skills; section boosts emulated by duplication then dedeup
+export function extractSkillCandidates(jdText) {
+  const lines = (jdText || "").replace(/\r/g, "").split(/\n+/).map(s => s.trim()).filter(Boolean);
+
+  const picked = [];
+  let sectionBoost = 0;
+  for (const line of lines) {
+    if (SECTION_HEAD_RX.test(line)) sectionBoost = 2; else if (sectionBoost > 0) sectionBoost -= 1;
+
+    const keep =
+      /^[-*•]/.test(line) ||
+      line.length <= 200 ||
+      /experience|proficient|knowledge|skills|requirements|qualifications|responsibilities|stack/i.test(line);
+    if (!keep) continue;
+
+    const cands = splitCandidates(line);
+    for (const c of cands) {
+      const canon = reduceToCanonicalToken(c);
+      if (!canon) continue;
+      picked.push(canon);
+      if (sectionBoost) picked.push(canon);
+    }
+  }
+
+  // Final canonical set
+  const uniq = Array.from(new Set(picked.map(normalizeSkill)))
+    .filter(x => x && !STOP.has(x));
+  return new Set(uniq);
+}
+
+/* ---------------- User skills + fuzzy ---------------- */
+
+export async function getUserSkillsSet() {
+  const { autofillData } = await chrome.storage.local.get("autofillData");
+  const raw = (autofillData?.skills || "").toString();
+  const items = raw.split(",").map(s => normalizeSkill(s)).filter(Boolean);
+  const filtered = items.filter(s => CLIENT_TAXONOMY.has(s) || KEEPER_PATTERNS.some(rx => rx.test(s)));
+  return new Set(filtered);
+}
+
+export function fuzzyMatch(a, b, thresh = 0.88) {
+  a = normalizeSkill(a); b = normalizeSkill(b);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.includes(b) || b.includes(a)) return true;
+  const r = levRatio(a, b);
+  return r >= thresh;
+}
+function levRatio(a, b) {
+  const m = a.length, n = b.length;
+  if (!m && !n) return 1;
+  if (!m || !n) return 0;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i=0;i<=m;i++) dp[i][0] = i;
+  for (let j=0;j<=n;j++) dp[0][j] = j;
+  for (let i=1;i<=m;i++) {
+    for (let j=1;j<=n;j++) {
+      const cost = a[i-1] === b[j-1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost);
+    }
+  }
+  const dist = dp[m][n];
+  return 1 - dist / Math.max(m, n);
+}

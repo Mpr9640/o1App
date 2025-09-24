@@ -12,6 +12,7 @@ from api import candidate, user # importing routers
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 import os
+from api import jobs,metrics
 load_dotenv()
 
 import re
@@ -60,9 +61,14 @@ async def validation_exception_handler(request: Request, exc:RequestValidationEr
     response = JSONResponse(status_code=422, content={"detail": exc.errors(), "body": exc.body},)
     response.headers["Access-Control-Allow-Origin"] = frontend_url
     return response
+@app.get('/')
+def ping():
+ return {"ok": True}
 #Include routers from separate modules.
 app.include_router(candidate.router, prefix="/api", tags=['Candidate'])
 app.include_router(user.router, prefix="/api",tags=["User"])
+app.include_router(jobs.router)#,prefix='/api/jobs',tags=['Jobs'])
+app.include_router(metrics.router)
 #app.include_router(dependencies.router, prefix="/api", tags=["Dependencies"])
 
 
@@ -73,20 +79,5 @@ if __name__ == "__main__":
   
 
                
-#       'https://virtoratech.zohorecruit.com',
- #        'https://infynixsync.zohorecruit.com',
-  #       'https://www.linkedin.com',
-   ###    'https://recruiting2.ultipro.com',
-       #  'https://jobs.lever.co',
-      #   'https://job-boards.greenhouse.io',
-        # 'https://jobs.davisadagency.com',
-         #'https://careersus-shure.icims.com',
-         #'https://jobs.ashbyhq.com',
-        # 'https://bedgearhr.applicantstack.com',
-         #'https://careers.adobe.com',
-         #'https://motionrecruitment.com',
-         #'https://eeho.fa.us2.oraclecloud.com',
-         #'https://job-boards.greenhouse.io',
-         #'https://app.trinethire.com',
-         #'https://fa-etgw-saasfaprod1.fa.ocs.oraclecloud.com'
+
 

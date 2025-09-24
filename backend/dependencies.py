@@ -24,15 +24,23 @@ def get_current_user(db: Session = Depends(get_db),
     print('Received token:')
     #Determine which token to use:
     token_value= None
-    if authorization:
-        if authorization.startswith('Bearer'):
-            token_value = authorization.split(' ')[1]
-        else:
-            raise HTTPException(
-                status_code = status.HTTP_401_UNAUTHORIZED,
-                detail = 'Invalid authenticaton scheme in header'
+    #if authorization:
+    #    if authorization.startswith('Bearer'):
+    #        token_value = authorization.split(' ')[1]
+    #    else:
+    #        raise HTTPException(
+    #            status_code = status.HTTP_401_UNAUTHORIZED,
+    #            detail = 'Invalid authenticaton scheme in header'
 
+    #       ) 
+    if authorization:
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0] != "Bearer":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Authorization header (use: Bearer <token>)",
             )
+        token_value = parts[1]
     elif access_token_cookie:
         token_value = access_token_cookie
         #pass # because token from the cookie parameter is already set.
