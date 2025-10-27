@@ -1,11 +1,8 @@
-// Works with text/number/date/email/tel/password/textarea/contenteditable/select/checkbox/radio/file
-// Handles React/MUI/AntD/React-Select comboboxes, drag-n-drop dropzones, shadow DOM inputs, and same-origin iframes.
-
-// ====== Config ======
+//===Global caches
+//Config ======
 const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const DEBUG = true; // flip to false to quiet logs
-
-// ====== Styles ======
+//Styles ======
+import { waitForResumeParseNetworkFirst } from'./resumechecking.js';
 const style = document.createElement('style');
 style.textContent = `
   .autofill-highlight{ outline:2px solid gold !important; transition: outline .3s ease-out; }
@@ -13,724 +10,1331 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-// ====== Utils ======
-const log = (...a)=>DEBUG&&console.log('[autofill]', ...a);
-const delay = (ms)=>new Promise(r=>setTimeout(r,ms));
-
 const fieldNameCache = new WeakMap();
 const groupCache = new WeakMap();
+//const delay = (ms)=>new Promise(r=>setTimeout(r,ms));s
+// Visibility / Normalization
+function isElementVisible(el){
+  if (!el || !el.getBoundingClientRect) return false;
+  const rect = el.getBoundingClientRect();
+  if (!rect || rect.width === 0 || rect.height === 0) return false;
 
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+
+  if ((rect.bottom < 0 && rect.top < 0) || (rect.right < 0 && rect.left < 0)) return false;
+
+  for (let n = el; n; n = n.parentElement){
+    if (n.hidden) return false;
+    if (n.getAttribute && n.getAttribute('aria-hidden') === 'true') return false;
+    if ('inert' in n && n.inert) return false;
+  }
+  return true;
+}
 function normalizeFieldName(s){
   return (s||'').toString().toLowerCase().replace(/\s/g,'').replace(/[^a-z0-9]/g,'').trim();
 }
 function normalizeFieldNameWithSpace(s){
-  return (s||'').toString().toLowerCase()
-    .replace(/[^a-z0-9\s]/gi,'')
-    .replace(/([a-z]([A-Z]))/g,'$1 $2')
+  return (s||'').toString()
+    .replace(/([a-z])([A-Z])/g,'$1 $2')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g,' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
-function isVisible(el){
-  if (!el || !el.getBoundingClientRect) return false;
-  const r = el.getBoundingClientRect();
-  const style = window.getComputedStyle(el);
-  return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-}
-function simulateMouseMove(el){
-  try{
-    const r = el.getBoundingClientRect();
-    const x = r.left + (Math.random()*Math.max(1, r.width));
-    const y = r.top  + (Math.random()*Math.max(1, r.height));
-    el.dispatchEvent(new MouseEvent('mousemove',{clientX:x,clientY:y,bubbles:true}));
-  }catch{}
-}
-function formatDate(val){
-  try{
-    const d = new Date(val);
-    if (isNaN(+d)) return '';
-    const y = d.getFullYear();
-    const m = String(d.getMonth()+1).padStart(2,'0');
-    const day = String(d.getDate()).padStart(2,'0');
-    return `${y}-${m}-${day}`;
-  }catch{ return ''; }
-}
-
-// ===== Workday detection =====
-function isWorkdaySite() {
-  return /(^|\.)myworkdayjobs\.com$/i.test(location.hostname) || /\.wd\d+\.myworkdayjobs\.com$/i.test(location.hostname);
-}
-
-// ===== Resume/Network/DOM Quiet =====
-const RESUME_PARSE_TIMEOUT_MS = 20000;
-const DOM_QUIET_MS = 600;
-
-let parseHookInstalled = false;
-let pendingParseCalls = 0;
-let lastDomChangeAt = Date.now();
-let resumeUploadHappened = false;
-
-const PARSE_HINT_RX = /(resume|cv|parse|autofill|extract|profile-extract|doc-parse|attachment)/i;
-
-const _domQuietObserver = new MutationObserver(() => { lastDomChangeAt = Date.now(); });
-_domQuietObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-
-function isParsingSpinnerActive() {
-  return !!document.querySelector(
-    '[aria-busy="true"], [role="status"], .loading, .spinner, .progress, .MuiCircularProgress-root, .ant-spin-spinning'
-  );
-}
-function installParseHooksOnce() {
-  if (parseHookInstalled) return;
-  parseHookInstalled = true;
-  log('Installing parse/network hooks');
-
-  const _fetch = window.fetch;
-  window.fetch = async function(input, init) {
-    const url = typeof input === 'string' ? input : (input?.url || '');
-    const tracked = PARSE_HINT_RX.test(url);
-    if (tracked) pendingParseCalls++;
-    try {
-      const res = await _fetch.apply(this, arguments);
-      if (tracked) res.clone().text().finally(() => setTimeout(() => pendingParseCalls = Math.max(0, pendingParseCalls - 1), 0));
-      return res;
-    } catch (e) {
-      if (tracked) setTimeout(() => pendingParseCalls = Math.max(0, pendingParseCalls - 1), 0);
-      throw e;
-    }
-  };
-
-  const _open = XMLHttpRequest.prototype.open;
-  const _send = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function(method, url) {
-    this.__isParse = PARSE_HINT_RX.test(url || '');
-    return _open.apply(this, arguments);
-  };
-  XMLHttpRequest.prototype.send = function() {
-    if (this.__isParse) pendingParseCalls++;
-    this.addEventListener('loadend', () => {
-      if (this.__isParse) setTimeout(() => pendingParseCalls = Math.max(0, pendingParseCalls - 1), 0);
-    });
-    return _send.apply(this, arguments);
-  };
-}
-async function waitForResumeParseToFinish(timeoutMs = RESUME_PARSE_TIMEOUT_MS) {
-  installParseHooksOnce();
-  log('Waiting for resume parse to finish...');
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const netIdle  = pendingParseCalls === 0;
-    const domQuiet = (Date.now() - lastDomChangeAt) >= DOM_QUIET_MS;
-    const noSpin   = !isParsingSpinnerActive();
-    if (netIdle && domQuiet && noSpin) {
-      log('Resume parse finished (idle/quiet/no spinner)');
-      return true;
-    }
-    await delay(120);
-  }
-  log('Resume parse wait timed out (continuing)');
-  return false;
-}
-async function waitForUiUpdates(totalTimeout = 4000, minQuiet = DOM_QUIET_MS) {
-  const start = Date.now();
-  log('Waiting for UI updates to settle...');
-  while (Date.now() - start < totalTimeout) {
-    const domQuiet = (Date.now() - lastDomChangeAt) >= minQuiet;
-    const noSpin   = !isParsingSpinnerActive();
-    if (domQuiet && noSpin) {
-      log('UI settled (quiet/no spinner)');
-      return true;
-    }
-    await delay(120);
-  }
-  log('UI settle wait timed out');
-  return false;
-}
-
-// ===== Labels / Nearby text =====
-function nearestTextAround(el, px=220){
-  const rectEl = el.getBoundingClientRect();
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
-  let nearest = '', best = Infinity;
-  while(walker.nextNode()){
-    const n = walker.currentNode;
-    if(!n.parentElement) continue;
-    const txt = (n.textContent||'').trim();
-    if(!txt) continue;
-    const r = n.parentElement.getBoundingClientRect?.(); if(!r) continue;
-    const cx = r.left + r.width/2, cy = r.top + r.height/2;
-    const dx = cx - (rectEl.left + rectEl.width/2);
-    const dy = cy - (rectEl.top + rectEl.height/2);
-    const dist = Math.hypot(dx,dy);
-    if(dist < px && dist < best){ best = dist; nearest = txt; }
-  }
-  return normalizeFieldNameWithSpace(nearest);
-}
-
-function inputFieldSelection(field){
-  if(!field) return '';
-  if(fieldNameCache.has(field)) return fieldNameCache.get(field);
-
-  const clean = (s)=>{
-    if(!s) return '';
-    let t = s.trim();
-    if(field.value) t = t.replace(field.value,'').trim();
-    if(field.placeholder) t = t.replace(field.placeholder,'').trim();
-    return normalizeFieldNameWithSpace(t);
-  };
-
-  const inFieldset = ()=>{
-    const fs = field.closest('fieldset');
-    if(!fs) return '';
-    const legend = fs.querySelector('legend');
-    if(legend?.textContent) return clean(legend.textContent);
-    const lab = fs.querySelector(':scope > label');
-    if(lab?.textContent) return clean(lab.textContent);
-    return '';
-  };
-  const labelAssoc = ()=>{
-    if (field.id){
-      const lab = document.querySelector(`label[for="${CSS.escape(field.id)}"]`);
-      if (lab?.textContent) return clean(lab.textContent);
-    }
-    let el=field;
-    while(el && el!==document.body){
-      if(el.tagName==='LABEL') return clean(el.textContent);
-      if(el.parentNode?.tagName==='LABEL') return clean(el.parentNode.textContent);
-      let prev = el.previousElementSibling;
-      while(prev){
-        if(prev.tagName==='LABEL') return clean(prev.textContent);
-        prev = prev.previousElementSibling;
-      }
-      el=el.parentNode;
-    }
-    return '';
-  };
-  const ariaLabels = ()=>{
-    if(field.hasAttribute('aria-label')) return clean(field.getAttribute('aria-label'));
-    if(field.hasAttribute('aria-labelledby')){
-      const ids = field.getAttribute('aria-labelledby').split(/\s+/);
-      const txt = ids.map(id => document.getElementById(id)?.textContent || '').join(' ');
-      if (txt.trim()) return clean(txt);
-    }
-    return '';
-  };
-  const inContainers = ()=>{
-    let el=field;
-    while(el && el!==document.body){
-      const p = el.parentNode;
-      if(p && ['DIV','SECTION','SPAN','TD','TH','LI','P'].includes(p.tagName)){
-        const txt = (p.textContent||'').trim();
-        if(txt) return clean(txt);
-      }
-      let prev = el.previousElementSibling;
-      while(prev){
-        if(['DIV','SECTION','SPAN','TD','TH','LI','P'].includes(prev.tagName) && prev.textContent?.trim()){
-          return clean(prev.textContent);
-        }
-        prev = prev.previousElementSibling;
-      }
-      el = el.parentNode;
-    }
-    return '';
-  };
-
-  let name = '';
-  if(['checkbox','radio'].includes((field.type||'').toLowerCase())) name = inFieldset() || labelAssoc() || inContainers();
-  if(!name) name = labelAssoc();
-  if(!name) name = ariaLabels();
-  if(!name && field.name) name = clean(field.name);
-  if(!name && field.title) name = clean(field.title);
-  if(!name) name = inFieldset() || inContainers();
-  if(!name && field.placeholder) name = clean(field.placeholder);
-  if(!name) name = nearestTextAround(field);
-
-  fieldNameCache.set(field,name||'');
-  return name||'';
-}
-
-// ===== Section prefixes (safer) =====
-const sectionRules = [
-  { rx: /(contact|personal).*info|address/i, prefix: 'residence', weight: 3 },
-  { rx: /(home|current|residential).*address/i, prefix: 'residence', weight: 3 },
-  { rx: /(education|school|university|college)/i, prefix: 'school', weight: 3 },
-  { rx: /(experience|employment|work|job)/i, prefix: 'job', weight: 3 },
-  { rx: /(company|employer)/i, prefix: 'job', weight: 2 },
-];
-function getSectionPrefix(input){
-  let cur = input;
-  let best = { prefix: 'residence', weight: 0 };
-  while(cur && cur!==document.body){
-    const wrap = cur.closest('fieldset,section,div,span,form');
-    if(wrap){
-      const title = wrap.querySelector('legend,h1,h2,h3,[data-automation-id],.section-title,.title,label');
-      const txt = (title?.textContent || title?.getAttribute?.('data-automation-id') || '').toLowerCase();
-      for (const r of sectionRules){
-        if (r.rx.test(txt) && r.weight > best.weight) best = { prefix: r.prefix, weight: r.weight };
-      }
-    }
-    cur = cur.parentElement;
-  }
-  return best.prefix;
-}
-
-// ===== Mappings =====
-const fieldMappings = [
-  {keywords:[/company|employer/], dataKey:'companyname'},
-  {keywords:[/email/], dataKey:'email', type:'text'},
-  {keywords:[/first.*name/], dataKey:'firstname', type:'text'},
-  {keywords:[/middle.*name/], dataKey:'middlename', type:'text'},
-  {keywords:[/last.*name/], dataKey:'lastname', type:'text'},
-  {keywords:[/(country.+code)|(phone.+code)/], dataKey:'residencountry', type:'code', handleCountryCode:true},
-  {keywords:[/(phone|mobile|telephone)/], dataKey:'phonenumber', type:'text', handleCountryCode:true},
-  {keywords:[/date.*of.*birth/], dataKey:'dateofbirth', type:'date'},
-  {keywords:[/linkedin/], dataKey:'linkedin', type:'text'},
-  {keywords:[/github/], dataKey:'github', type:'text'},
-  {keywords:[/resume|cv/], dataKey:'resume', type:'file'},
-  {keywords:[/race|ethnicity/], dataKey:'race', type:'radio'},
-  {keywords:[/degree/], dataKey:'degree', type:'text'},
-  {keywords:[/major/], dataKey:'major', type:'text'},
-  {keywords:[/school.*name|college.*name|university.*name/], dataKey:'school', type:'text'},
-  {keywords:[/start.*date/], dataKey:'startdate', type:'date'},
-  {keywords:[/end.*date/], dataKey:'enddate', type:'date'},
-  {keywords:[/cgpa/], dataKey:'cgpa', type:'text'},
-  {keywords:[/skills/], dataKey:'skills', type:'textarea'},
-  {keywords:[/job.*title|job.*name/], dataKey:'jobname', type:'text'},
-  {keywords:[/(duties|responsibilities|description)/], dataKey:'jobduties', type:'textarea'},
-  {keywords:[/currently.*working/], dataKey:'currentlyworking', type:'checkbox'},
-  {keywords:[/currently.*studying/], dataKey:'currentlystudying', type:'checkbox'},
-  {keywords:[/sponsor|spsor/], dataKey:'needsponsorship', type:'checkbox'},
-  {keywords:[/veteran|military/], dataKey:'veteran', type:'checkbox'},
-  {keywords:[/disability|disable/], dataKey:'disability', type:'checkbox'},
-  {keywords:[/gender/], dataKey:'gender', type:'radio'},
-  {keywords:[/address|city|town|zip|postal|location|locat|state|country/], dataKey:'dummy', type:'address'},
-  {keywords:[/name|fullname/], dataKey:'fullname', type:'text'},
-];
-
-// ===== Radio/Checkbox labels =====
-function findAssociatedLabel(input){
-  if (input.id){
-    const byFor = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
-    if (byFor) return byFor.textContent.trim();
-  }
-  const aria = input.getAttribute('aria-labelledby');
-  if (aria){
-    const txt = aria.split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ').trim();
-    if (txt) return txt;
-  }
-  if (input.getAttribute('aria-label')) return input.getAttribute('aria-label');
-
-  const c = input.closest('div, span, label, li, tr, td, th, p');
-  if(c){
-    const direct = c.querySelector('label,button,[role="button"]');
-    if(direct?.textContent) return direct.textContent.trim();
-    const sibs = [...c.parentElement?.children || []].filter(x=>x.tagName?.toLowerCase()==='label');
-    if(sibs.length) return sibs[0].textContent.trim();
-  }
-  return nearestTextAround(input);
-}
-
-// ===== Booleans / Options =====
+// Booleans / Options =====
 const BOOL_TRUE = new Set(['yes','y','true','t','1','accept','agree','iagree','optin','on','currentlyworking','currentlystudying']);
 const BOOL_FALSE = new Set(['no','n','false','f','0','decline','disagree','i do not agree','optout','off','notcurrentlyworking','notcurrentlystudying']);
 
 function normalizeOptionText(text) {
   return (text||'').split('-')[0].replace(/\(.*?\)/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
+} 
+//Function for normalization ob booleans
 function normalizeToBooleanLike(v){
   const s = normalizeOptionText(String(v));
   if (BOOL_TRUE.has(s)) return 'yes';
   if (BOOL_FALSE.has(s)) return 'no';
   return s;
 }
-// --- NEW: read current visible text/value for a combobox-like input
-function readComboText(input){
-  const t = resolveTypingTarget(input);
-  const v = (t && ('value' in t)) ? (t.value || '') : (t?.textContent || '');
-  return normalizeFieldNameWithSpace(v || '');
-}
+//icims resume seter
+async function waitForPageSettle({ urlQuietMs = 800, domQuietMs = 600, timeoutMs = 8000 } = {}) {
+  const startUrl = location.href;
+  let lastChange = performance.now();
 
-// --- NEW: commit a Workday selection like a real user
-async function commitWorkdaySelection(input){
-  const t = resolveTypingTarget(input);
-  if (!t) return;
-  // Press Enter to accept the highlighted option
-  t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
-  t.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true,cancelable:true}));
-  await delay(80);
-  // Close the popup (Escape), then give WD time to propagate state
-  t.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
-  t.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',bubbles:true,cancelable:true}));
-  await waitForUiUpdates(2500, 250);
-}
+  const mo = new MutationObserver(() => { lastChange = performance.now(); });
+  try { mo.observe(document.documentElement, { childList: true, subtree: true }); } catch {}
 
-// --- NEW: verify selection stuck; if not, retry via keyboard navigation
-async function verifyAndCommitDropdown(input, expectedNorm){
-  const after = readComboText(input);
-  if (after && (after === expectedNorm || after.includes(expectedNorm))) return true;
+  const t0 = performance.now();
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const urlChanged = location.href !== startUrl;
+      const domIdle   = (now - lastChange) >= domQuietMs;
+      const urlIdle   = urlChanged ? ((now - lastChange) >= urlQuietMs) : true;
 
-  // Retry once via keyboard: open, ArrowDown, Enter
-  input.click();
-  await delay(120);
-  const t = resolveTypingTarget(input);
-  if (t){
-    t.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));
-    t.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',bubbles:true,cancelable:true}));
-    t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
-    t.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true,cancelable:true}));
-  }
-  await waitForUiUpdates(2500, 250);
-
-  const finalV = readComboText(input);
-  return !!finalV;
-}
-
-// ===== Dropdown / Autocomplete =====
-function isComplexDropdown(el){
-  const hasPopup = (el.getAttribute && el.getAttribute('aria-haspopup')?.toLowerCase()==='listbox') || false;
-  const sibBtn = !!el.parentElement?.querySelector?.('button[aria-haspopup="listbox"]');
-  const sibSpan = !!el.nextElementSibling?.matches?.('span[aria-haspopup="listbox"]');
-  return el.getAttribute?.('role')==='combobox'
-      || el.classList?.contains?.('autocomplete')
-      || !!el.closest?.('.dropdown-menu,.MuiAutocomplete-root,.MuiSelect-root,.ant-select,.Select')
-      || (el.placeholder||'').toLowerCase().match?.(/search|select/)
-      || hasPopup || sibBtn || sibSpan;
-}
-function isMultiSelectLike(el){
-  if (el.tagName?.toUpperCase() === 'SELECT' && el.multiple) return true;
-  if (el.closest?.('.ant-select-multiple')) return true;
-  if (el.closest?.('.MuiAutocomplete-root')?.className?.includes('MuiAutocomplete-multiple')) return true;
-  if (el.closest?.('.Select--multi')) return true; // react-select classic
-  const lb = el.getAttribute?.('aria-controls') ? document.getElementById(el.getAttribute('aria-controls')) : null;
-  if (lb && lb.getAttribute('aria-multiselectable') === 'true') return true;
-  return false;
-}
-function splitMultiValues(raw){
-  if (Array.isArray(raw)) return raw.map(v=>String(v)).filter(Boolean);
-  return String(raw||'').split(/[,;|]/g).map(s => s.trim()).filter(Boolean);
-}
-function resolveTypingTarget(el) {
-  if (!el) return null;
-  if (el.tagName === 'INPUT' || el.isContentEditable) return el;
-  el.click();
-  const scope = el.closest?.('[role="combobox"], .MuiAutocomplete-root, .ant-select, .Select, .dropdown, .wd-TextInput') || document;
-  const target = scope.querySelector?.('input:not([type="hidden"]):not([disabled])') || document.activeElement;
-  return (target && (target.tagName === 'INPUT' || target.isContentEditable)) ? target : el;
-}
-async function typeToInput(input, value){
-  const t = resolveTypingTarget(input);
-  if (!t) { input.click(); await delay(60); return; }
-
-  t.focus(); t.click();
-  await delay(50);
-
-  // Clear existing text but do NOT fire 'change' yet (Workday can crash on early change)
-  if ('value' in t) {
-    t.value = '';
-    t.dispatchEvent(new Event('input', { bubbles: true })); // input only
-  }
-  await delay(40);
-}
-
-/*async function typeToInput(input, value){
-  const target = resolveTypingTarget(input);
-  target.focus(); target.click();
-  await delay(40);
-  try {
-    const proto = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
-                : target instanceof HTMLInputElement ? HTMLInputElement.prototype
-                : HTMLElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (desc?.set) desc.set.call(target, '');
-    else target.value = '';
-  } catch { target.value = ''; }
-  target.dispatchEvent(new Event('input',{bubbles:true}));
-  target.dispatchEvent(new Event('change',{bubbles:true}));
-  await delay(30);
-
-  for (const ch of String(value)) {
-    target.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles:true, cancelable:true }));
-    try {
-      const proto = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
-                  : target instanceof HTMLInputElement ? HTMLInputElement.prototype
-                  : HTMLElement.prototype;
-      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-      const next = (target.value || '') + ch;
-      if (desc?.set) desc.set.call(target, next);
-      else target.value = next;
-    } catch {
-      target.value = (target.value || '') + ch;
-    }
-    target.dispatchEvent(new Event('input',{bubbles:true}));
-    target.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles:true, cancelable:true }));
-    await delay(8);
-  }
-  target.dispatchEvent(new Event('change',{bubbles:true}));
-  await delay(100);
-} */
-function getActiveListboxes(){
-  const listboxes = [
-    ...document.querySelectorAll('[role="listbox"]:not([aria-hidden="true"])'),
-    ...document.querySelectorAll('.MuiAutocomplete-popper [role="listbox"]'),
-    ...document.querySelectorAll('.MuiPaper-root .MuiMenu-list'),
-    ...document.querySelectorAll('.ant-select-dropdown [role="listbox"], .ant-select-dropdown .ant-select-item-option'),
-    ...document.querySelectorAll('.rc-virtual-list, .rc-virtual-list-holder')
-  ];
-  return listboxes.filter(lb => isVisible(lb));
-}
-async function gatherDropdownOptions(maxScrolls=8){
-  const seen = new Set();
-  let options = [];
-  for (let i=0; i<maxScrolls; i++){
-    const lbs = getActiveListboxes();
-    if (!lbs.length) break;
-    for (const lb of lbs){
-      const nodes = lb.querySelectorAll(
-        '[role="option"]:not([aria-disabled="true"]):not(.Mui-disabled),' +
-        '.dropdown-option:not([aria-disabled="true"]),' +
-        'li.MuiAutocomplete-option:not(.Mui-disabled),' +
-        '.MuiList-root .MuiMenuItem-root:not(.Mui-disabled),' +
-        '.ant-select-item-option:not(.ant-select-item-option-disabled),' +
-        'div[data-value][role="option"],' +
-        'ul[role="listbox"] > li:not([aria-disabled="true"]):not([aria-hidden="true"])'
-      );
-      nodes.forEach(n=>{ if(!seen.has(n)){ seen.add(n); options.push(n); } });
-      if (lb.scrollHeight - lb.scrollTop > lb.clientHeight + 2) {
-        lb.scrollTop = Math.min(lb.scrollTop + lb.clientHeight, lb.scrollHeight);
-        await delay(100);
+      if ((domIdle && urlIdle) || (now - t0) > timeoutMs) {
+        clearInterval(timer);
+        try { mo.disconnect(); } catch {}
+        // give layout a tick
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
       }
-    }
-  }
-  return options;
-}
-async function selectBestOption(normValue, options) {
-  const candidates = Array.from(options).map(opt => {
-    const t = normalizeFieldNameWithSpace(opt.textContent || opt.innerText || '');
-    const dv = normalizeFieldNameWithSpace(opt.getAttribute?.('data-value') || opt.value || '');
-    return { t, dv, opt };
+    }, 120);
   });
-
-  let chosen = candidates.find(c => c.t === normValue || c.dv === normValue)?.opt;
-  if (chosen) return chosen;
-
-  const vBool = normalizeToBooleanLike(normValue);
-  chosen = candidates.find(c => normalizeToBooleanLike(c.t) === vBool || normalizeToBooleanLike(c.dv) === vBool)?.opt;
-  if (chosen) return chosen;
-
-  try {
-    const labels = candidates.map(c => c.t || c.dv);
-    const response = await new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'bestMatch', text: normValue, labels }, (res) => {
-        if (res && res.ok) resolve(res);
-        else reject(res?.error || "Best match failed");
-      });
-    });
-    if (response?.label){
-      const match = candidates.find(c => c.t === response.label || c.dv === response.label);
-      if (match) return match.opt;
-    }
-  } catch (err) {
-    console.warn('[autofill] ML match failed:', err);
-  }
-
-  chosen = candidates.find(c => c.t.includes(normValue) || c.dv.includes(normValue))?.opt;
-  if (chosen) return chosen;
-
-  const tokens = new Set(normValue.split(/\s+/).filter(Boolean));
-  let best = {opt:null, score:-1};
-  for (const c of candidates){
-    const ts = new Set((c.t || c.dv).split(/\s+/).filter(Boolean));
-    const overlap = [...tokens].filter(t=>ts.has(t)).length;
-    if (overlap > best.score){ best = { opt:c.opt, score:overlap }; }
-  }
-  return best.opt || null;
 }
-function isBooleanLikeString(s){
-  const v = normalizeToBooleanLike(String(s));
-  return v === 'yes' || v === 'no';
-}
-
-function optionsContainBoolean(options){
-  for (const opt of options){
-    const t = normalizeFieldNameWithSpace(opt.textContent || opt.innerText || opt.value || '');
-    const v = normalizeToBooleanLike(t);
-    if (v === 'yes' || v === 'no') return true;
+async function waitForInputs(minCount = 1, tries = 12, gapMs = 300) {
+  for (let i = 0; i < tries; i++) {
+    const found = inputSelection();
+    if (found && found.length >= minCount) return found;
+    await waitForDomStable({ timeoutMs: gapMs + 120, quietMs: Math.min(200, gapMs) });
   }
+  return inputSelection();
+}
+function canAttachResumeInThisFrame() {
+  // A. native file inputs we can set programmatically
+  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+  if (fileInputs.length) return true;
+
+  // B. Known ATS selectors we can get a real input handle for after a click
+  // (iCIMS hidden input you already handle)
+  if (document.querySelector('#PortalProfileFields\\.Resume_File')) return true;
+
+  // Greenhouse common: input#resume or input[name="resume"]
+  if (document.querySelector('input#resume, input[name="resume"]')) return true;
+
+  // Lever: input[name="resume"] sometimes present
+  if (document.querySelector('input[type="file"][name="resume"]')) return true;
+
+  // SmartRecruiters often: input[type=file] exists when dialog open – we can’t open dialogs
+  // If only buttons like “Upload resume” exist (no input element we can set), return false
+  //const onlyButtons = !!document.querySelector('[data-testid*="upload"], [aria-label*="upload resume" i], button:matches([data-action*="resume" i],[data-testid*="resume" i])');
+  const onlyButtons = !!document.querySelector('[data-testid*="upload"], [aria-label*="upload resume" i], button:is([data-action*="resume" i],[data-testid*="resume" i])');
+  if (onlyButtons && !fileInputs.length) return false;
+
+  // Dropzones we can feed via synthetic Drag&Drop (you already support)
+  const dz = document.querySelector('.dropzone, [data-dropzone], .dz-clickable, .attachment-drop, .file-uploader');
+  if (dz) return true;
+
   return false;
 }
-async function trySearchingInDropdown(input, rawValue){
-  const value = String(rawValue);
-  const normValue = normalizeFieldNameWithSpace(value);
-  // --- NEW: open first on Workday, then preflight options BEFORE typing
-  const isWD = isWorkdaySite();
-  if (isWD) {
-    // If the trigger is a button, just click to open the listbox
-    if (input.tagName?.toUpperCase() === 'BUTTON') {
-      input.click();
-      await delay(120);
-    } else {
-      // Focus/click without clearing or firing change yet
-      input.focus(); input.click();
-      await delay(120);
+
+async function collectInputsWithRetry(tries = 3, gapMs = 300) {
+  for (let i=0; i<tries; i++) {
+    const res = inputSelection();
+    if (res && res.length) return res;
+    await delay(gapMs);
+  }
+  return inputSelection();
+}
+
+
+
+// DOM settle helper
+/*
+function waitForDomStable({ timeoutMs = 2500, quietMs = 180 } = {}) {
+  return new Promise(resolve => {
+    let timer = setTimeout(done, timeoutMs);
+    let idle;
+    const mo = new MutationObserver(() => {
+      clearTimeout(idle);
+      idle = setTimeout(done, quietMs);
+    });
+    mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+    function done(){
+      mo.disconnect();
+      clearTimeout(timer);
+      resolve();
     }
+  });
+}
+*/
+// Safe, reload-proof DOM idle waiter
+export function waitForDomStable({
+  timeoutMs = 2500,
+  quietMs = 180,
+  observeAttributes = true
+} = {}) {
+  return new Promise((resolve) => {
+    let done = false;
+    let idleTimer = null;
+    let timeoutTimer = null;
+    let rootWatchTimer = null;
+    let lastRoot = null;
 
-    // Gather whatever is visible right now
-    let preOpts = await gatherDropdownOptions(2);
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { mo.disconnect(); } catch {}
+      clearTimeout(idleTimer);
+      clearTimeout(timeoutTimer);
+      clearInterval(rootWatchTimer);
+      resolve();
+    };
 
-    // If caller is trying to set a boolean-like value but the dropdown is NOT boolean,
-    // skip to avoid crashing Workday's reader (e.g., Language: English/Spanish)
-    if (isBooleanLikeString(normValue) && preOpts.length && !optionsContainBoolean(preOpts)) {
-      log('[autofill] Skip non-boolean dropdown for boolean value', { value, normValue });
-      // Close any open popup politely
-      const t = resolveTypingTarget(input);
-      if (t){
-        t.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
-        t.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',bubbles:true,cancelable:true}));
+    const onMutation = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(finish, quietMs);
+    };
+
+    const mo = new MutationObserver(onMutation);
+
+    const safeObserve = (node) => {
+      if (!node || !(node instanceof Node)) return false;
+      try {
+        mo.observe(node, {
+          subtree: true,
+          childList: true,
+          attributes: observeAttributes,
+          characterData: true
+        });
+        return true;
+      } catch {
+        return false;
       }
-      return false;
+    };
+
+    const attach = () => {
+      if (done) return;
+      // pick the best available root
+      const root = document.documentElement || document.body;
+      if (!root || !(root instanceof Node)) {
+        // try next frame until we get a real root (handles blank/reload)
+        return void requestAnimationFrame(attach);
+      }
+      if (root === lastRoot) return; // already observing this one
+
+      try { mo.disconnect(); } catch {}
+      lastRoot = root;
+
+      if (!safeObserve(root)) {
+        // if observing html fails, try body; if that fails, retry next frame
+        if (!safeObserve(document.body)) {
+          return void requestAnimationFrame(attach);
+        }
+      }
+      // (re)start quiet window
+      onMutation();
+    };
+
+    // Initial attach (may retry until a real root exists)
+    attach();
+
+    // Re-attach if the page swaps the root (common after resume parse)
+    rootWatchTimer = setInterval(() => {
+      if (done) return;
+      const currentRoot = document.documentElement || document.body;
+      if (currentRoot && currentRoot !== lastRoot) attach();
+    }, 250);
+
+    // Hard ceiling
+    timeoutTimer = setTimeout(finish, timeoutMs);
+  });
+}
+
+// Finding nearest label fallback
+function textNodeCenterRect(node) {
+  const range = node.ownerDocument.createRange();
+  range.selectNodeContents(node);
+  const rects = range.getClientRects();
+  range.detach?.();
+  if (!rects || rects.length === 0) return null;
+  let best = rects[0];
+  for (let i = 1; i < rects.length; i++) {
+    const r = rects[i];
+    if (r.width * r.height > best.width * best.height) best = r;
+  }
+  return best;
+}
+function getExplicitLabels(el) {
+  const doc = el.ownerDocument;
+  const out = [];
+  if (el.labels && el.labels.length) {
+    for (const lab of el.labels) {
+      const t = (lab.textContent || '').trim();
+      if (t) out.push(t);
+    }
+  } else {
+    let p = el.parentElement;
+    while (p) {
+      if (p.tagName === 'LABEL') {
+        const t = (p.textContent || '').trim();
+        if (t) out.push(t);
+        break;
+      }
+      p = p.parentElement;
+    }
+  }
+  const addByIds = (attr) => {
+    const ids = (el.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
+    for (const id of ids) {
+      const n = doc.getElementById(id);
+      if (n) {
+        const t = (n.textContent || '').trim();
+        if (t) out.push(t);
+      }
+    }
+  };
+  addByIds('aria-labelledby');
+  addByIds('aria-describedby');
+
+  if (el.placeholder) out.push(el.placeholder);
+  if (el.title) out.push(el.title);
+
+  return out;
+}
+function nearestTextAround(el, px = 220, { includeIframes = false } = {}) {
+  if (!el) return '';
+
+  const explicit = getExplicitLabels(el)
+    .map(normalizeFieldNameWithSpace)
+    .find(Boolean);
+  if (explicit) return explicit;
+
+  const root = el.getRootNode?.() || el.ownerDocument || document;
+  const doc = root.nodeType === 9 ? root : (root.ownerDocument || document);
+
+  const er = el.getBoundingClientRect();
+  const ecx = er.left + er.width / 2;
+  const ecy = er.top + er.height / 2;
+
+  const walker = doc.createTreeWalker(
+    root,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        const raw = node.nodeValue || '';
+        if (!raw.trim()) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        const tag = parent.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+        if (!isElementVisible(parent)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    },
+    false
+  );
+
+  let bestTxt = '';
+  let bestScore = Infinity;
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const rect = textNodeCenterRect(node);
+    if (!rect) continue;
+
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    const dx = cx - ecx;
+    const dy = cy - ecy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > px) continue;
+
+    let bias = 0;
+    if (cx > ecx) bias += 18;
+    if (cy > ecy) bias += 9;
+    if (Math.abs(dy) < 10) bias -= 6;
+
+    const score = dist + bias;
+    if (score < bestScore) {
+      bestScore = score;
+      bestTxt = (node.nodeValue || '').trim();
     }
   }
 
+  if (!bestTxt && includeIframes) {
+    for (const iframe of doc.querySelectorAll('iframe')) {
+      try {
+        const idoc = iframe.contentDocument;
+        if (!idoc) continue;
+        const walker2 = idoc.createTreeWalker(
+          idoc,
+          NodeFilter.SHOW_TEXT,
+          {
+            acceptNode(node) {
+              const raw = node.nodeValue || '';
+              if (!raw.trim()) return NodeFilter.FILTER_REJECT;
+              const parent = node.parentElement;
+              if (!parent) return NodeFilter.FILTER_REJECT;
+              const tag = parent.tagName;
+              if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+              if (!isElementVisible(parent)) return NodeFilter.FILTER_REJECT;
+              return NodeFilter.FILTER_ACCEPT;
+            }
+          },
+          false
+        );
 
-  log('Dropdown search', { value, normValue });
-
-  await typeToInput(input, value);
-
-  let options = await gatherDropdownOptions(8);
-  if (!options.length){
-    await delay(150);
-    options = await gatherDropdownOptions(6);
+        let best2 = Infinity, txt2 = '';
+        while (walker2.nextNode()) {
+          const node = walker2.currentNode;
+          const rect = textNodeCenterRect(node);
+          if (!rect) continue;
+          const cx = rect.left + rect.width / 2;
+          const cy = rect.top + rect.height / 2;
+          const dx = cx - ecx;
+          const dy = cy - ecy;
+          const dist = Math.hypot(dx, dy);
+          if (dist > px) continue;
+          let bias = 0;
+          if (cx > ecx) bias += 18;
+          if (cy > ecy) bias += 9;
+          if (Math.abs(dy) < 10) bias -= 6;
+          const score = dist + bias;
+          if (score < best2) {
+            best2 = score;
+            txt2 = (node.nodeValue || '').trim();
+          }
+        }
+        if (txt2) bestTxt = txt2;
+      } catch (e) {}
+    }
   }
 
-  const chosen = await selectBestOption(normValue, options);
-  if (chosen){
-    chosen.scrollIntoView({behavior:'smooth', block:'center'});
-    // Use full pointer sequence so React/Workday trusts it
-    chosen.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
-    chosen.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));
-    chosen.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));
-    chosen.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true}));
-    chosen.click();
-    input.dispatchEvent(new Event('change',{bubbles:true}));
-    log('Dropdown: picked option', chosen.textContent?.trim());
+  const norm = normalizeFieldNameWithSpace(bestTxt);
+  console.log('[nearestTextAround]', norm);
+  return norm;
+}
+function findAssociatedLabel(el){
+  if (!el) return '';
+  if (el.id){
+    const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+    if (lab?.textContent) return lab.textContent.trim();
+  }
+  return '';
+}
+///====Hosts
+// OPTIONAL: Workday hints
+function isWorkdayHost() {
+  const h = location.hostname;
+  return /\.myworkdayjobs\.com$/i.test(h) || /\.wd\d+\.myworkdayjobs\.com$/i.test(h);
+}
+///ICIMS host related 
+const isIcimsHost = /(?:^|\.)icims\.(?:com|co)$/i.test(location.hostname);
+function getIcimsFormRoot() {
+  return document.querySelector(
+    '#iCIMS_ApplicantProfile, form#cp_form, form[action*="Profile"], form[action*="Candidate"], .iCIMS_ContentPane'
+  ) || document;
+}
+function stableKeyFor(el) {
+  const id = el.id || '';
+  const name = el.getAttribute?.('name') || '';
+  const type = el.getAttribute?.('type') || '';
+  const formAct = el.form?.getAttribute?.('action') || '';
+  // short DOM path fingerprint
+  let n = el, path = [];
+  for (let i=0; n && i<4; i++) {
+    let ix = 0, sib = n;
+    while ((sib = sib.previousElementSibling)) ix++;
+    path.push(`${n.tagName}:${ix}`);
+    n = n.parentElement;
+  }
+  return [id, name, type, formAct, path.join('>')].join('|');
+}
 
-    // COMMIT & VERIFY for Workday (prevents “snap-back”)
-    if (isWorkdaySite()){
-      await commitWorkdaySelection(input);
-      const ok = await verifyAndCommitDropdown(input, normalizeFieldNameWithSpace(String(value)));
-      if (!ok) log('Workday commit retry still failed (will continue)', { value });
-    } else {
-      // Non-Workday: blur is fine
-      input.blur(); input.dispatchEvent(new Event('blur',{bubbles:true}));
+
+const fieldMappings = [
+  // ==== PERSONAL INFO ====
+  { keywords: [/\bfirst\s*name\b/i, /\bgiven\s*name\b/i], dataKey: 'firstname' },
+  { keywords: [/\bmiddle\s*name\b/i, /\binitial\b/i], dataKey: 'middlename' },
+  { keywords: [/\blast\s*name\b/i, /\bsurname\b/i, /\bfamily\s*name\b/i], dataKey: 'lastname' },
+  { keywords: [/\bfull\s*name\b/i, /\blegal\s*name\b/i,/^name$/i], dataKey: 'fullname' },
+  { keywords: [/\bdate\s*of\s*birth\b/i, /\bdob\b/i, /\bbirth\s*date\b/i], dataKey: 'dateofbirth', type:'date' },
+
+  // ==== CONTACT INFO ====
+  { keywords: [/\bemail\b/i, /\bemail\s*address\b/i], dataKey: 'email' },
+  { keywords: [/\b(?:phone|mobile|telephone|contact\s*number)\b(?!\s*(extension|type)\b)/i], dataKey: 'phonenumber' },
+  { keywords: [/\b(country\s*code|phone\s*code)\b/i], dataKey: 'residencecountry', handleCountryCode: true },
+
+  // ==== SOCIAL / LINKS ====
+  { keywords: [/\blinked\s?in\b/i, /\blinked\s*in\s*profile\b/i], dataKey: 'linkedin' },
+  { keywords: [/\bgit\s?hub\b/i, /\bgithub\s*profile\b/i], dataKey: 'github' },
+  { keywords: [/\bportfolio\b/i, /\bpersonal\s*site\b/i], dataKey: 'portfolio' },
+  { keywords: [/\bskills\b/i], dataKey: 'skills'},
+
+  // ==== FILE UPLOADS ====
+  { keywords: [/\bresume\b/i, /\bcv\b/i, /\bcurriculum\s*vitae\b/i], dataKey: 'resume' },
+  { keywords: [/\bcover\s*letter\b/i, /\bsupporting\s*document\b/i], dataKey: 'coverletter' },
+
+  // ==== DEMOGRAPHIC INFO ====
+  { keywords: [/\bgender\b/i, /\bsex\b/i], dataKey: 'gender' },
+  { keywords: [/\brace\b/i, /\bethnicity\b/i, /\bethnic\s*group\b/i], dataKey: 'race' },
+  { keywords: [/\bdisab(?:ility|led)?\b/i, /\bdisclosure of disability\b/i], dataKey: 'disability' },
+  { keywords: [/\bveteran\b/i, /\bmilitary\b/i, /\barmed\s*forces\b/i], dataKey: 'veteran' },
+  { keywords: [/\bsponsor|spsorship/i, /\bvisa\s*sponsor\b/i, /\bwork\s*authorization\b/i], dataKey: 'needsponsorship' },
+
+  // residence address / address line 1 / address number / street number — prefix required
+  {keywords: [/\b(?:residence|residential|street|postal|permanent|home)[-\s]*address\b(?!\s*line\s*2\b)(?:\s*(?:line\s*1|number(?:\s*\d+)?))?/i,/\b(?:residence|residential|permanent|present|current|home)[-\s]*street[-\s]*number\b/i],dataKey: 'residenceaddress'},
+  {keywords: [/\b(?:residence|residential|permanent|present|current|home)[-\s]*(?:city|town)\b/i],dataKey: 'residencecity'},
+  {keywords: [/\b(?:residence|residential|permanent|present|current|home)[-\s]*state\b(?!\s*of\b)/i],dataKey: 'residencestate'},
+  {keywords: [/\b(?:residence|residential|permanent|present|current|home)[-\s]*country\b(?!\s*(?:code|dial|calling)\b)/i],dataKey: 'residencecountry'},
+  {keywords: [/\b(?:residence|residential|permanent|present|current|home)[-\s]*(?:zip|postal|area)[-\s]*code\b/i],dataKey: 'residencezipcode'},
+  {keywords: [/\b(?:residence|residential|permanent|present|current|home|currently)[-\s]*(location|located)\b/i],dataKey: 'residencelocation'}
+];
+
+//=== Date related codes:
+function parseISOish(dateStr){
+  // accepts "YYYY", "YYYY-MM", "YYYY-MM-DD"
+  if (!dateStr) return null;
+  const m = String(dateStr).match(/^(\d{4})(?:[-/](\d{1,2}))?(?:[-/](\d{1,2}))?$/);
+  if (!m) return null;
+  const year  = +m[1];
+  const month = m[2] ? +m[2] : null;
+  const day   = m[3] ? +m[3] : null;
+  //console.log('parseisoish ymd',year,month,day);
+  return { year, month, day };
+}
+const p2 = (n)=> String(n).padStart(2,'0');
+
+function detectSingleDateGranularity(el){
+  // For single field date controls (not split month/year)
+  const t   = (el.type||'').toLowerCase();
+  const ph  = (el.getAttribute('placeholder')||'').toLowerCase();
+  const idn = ((el.id||'') + ' ' + (el.name||'')).toLowerCase();
+
+  if (t === 'month') return 'month-year-single';    // native <input type="month"> expects "YYYY-MM"
+  if (t === 'date')  return 'date-single';          // native "YYYY-MM-DD"
+  if( t==='year') return 'year-single';
+
+  // Placeholder/ID heuristics
+  if (/\bmm[\/\-]yyyy\b/.test(ph) || /\bmm[\/\-]yyyy\b/.test(idn))  return 'month-year-single';
+  if (/\byyyy\b/.test(ph) || /\byear\b/.test(idn))                  return 'year-single';
+  if (/\bdate\b/.test(idn) || /\bmm[\/\-]dd[\/\-]yyyy\b/.test(ph))  return 'date-single';
+
+  return null;
+}
+
+// turn a parsed {year,month,day} into the string the field expects
+function formatForGranularity(granularity, parts){
+  if (!parts) return '';
+  const {year, month, day} = parts;
+
+  switch (granularity){
+    case 'year-single':
+      return year ? String(year) : '';
+    case 'month-year-single':
+      // Prefer native input[type=month] "YYYY-MM"; if the site wants "MM/YYYY" we’ll rewrite later if needed.
+      if (year && month) return `${year}-${p2(month)}`;
+      // If month missing, degrade to just year to avoid junk
+      return year ? String(year) : '';
+    case 'date-single':
+      // Use safe fallback day=01 if missing
+      if (year && month) return `${year}-${p2(month)}-${p2(day||1)}`;
+      return year ? `${year}-01-01` : '';
+    default:
+      return '';
+  }
+}
+function refineDateHumanNameAndGroup(obj){
+  const el   = obj.element;
+  const id   = el.id   || '';
+  const name = el.name || '';
+  const key  = (id + ' ' + name).toLowerCase();
+
+  const isStart = /\b(startdate|start_date|fromdate|from_date|from|firstyearattended)\b/.test(key);
+  const isEnd   = /\b(enddate|end_date|todate|to_date|to|lastyearattended)\b/.test(key);
+  const side    = isStart ? 'from' : (isEnd ? 'to' : null);
+
+  const mentionsMonth = /\bmonth\b|datesectionmonth|\bmm\b/.test(key);
+  const mentionsYear  = /\byear\b|datesectionyear|\byyyy\b/.test(key);
+  const mentionsDay   = /\bday\b|datesectionday|\bdd\b/.test(key);   // ⬅️ new
+
+  const singleGran = detectSingleDateGranularity(el);
+  if (side && (mentionsMonth || mentionsYear || mentionsDay)){
+    const part = mentionsMonth ? 'month' : mentionsYear ? 'year' : 'day';
+    obj.humanName = `${side} ${part}`;
+    obj.groupId   = obj.groupId || `date:${side}`;
+    obj._dateMeta = { mode: 'split', side, part };
+    return;
+  }
+
+  if (side && singleGran){
+    obj.humanName = `${side} ${singleGran}`;
+    obj.groupId   = obj.groupId || `date:${side}`;
+    obj._dateMeta = { mode: 'single', side, granularity: singleGran };
+    return;
+  }
+
+  if (!side && /start|begin|from/i.test(obj.humanName||'')){
+    obj._dateMeta = { mode: singleGran ? 'single':'unknown', side: 'from', granularity: singleGran||null };
+    obj.groupId   = obj.groupId || `date:from`;
+    return;
+  }
+  if (!side && /\bend|finish|to\b/i.test(obj.humanName||'')){
+    obj._dateMeta = { mode: singleGran ? 'single':'unknown', side: 'to', granularity: singleGran||null };
+    obj.groupId   = obj.groupId || `date:to`;
+    return;
+  }
+
+  if (singleGran){
+    obj._dateMeta = { mode: 'single', side: null, granularity: singleGran };
+  }
+}
+function adaptMonthYearToPlaceholder(el, val, parts){
+  const ph = (el.getAttribute('placeholder')||'').toLowerCase();
+  if (!parts || !parts.year || !parts.month) return val;
+  if (/\bmm[\/\-]yyyy\b/.test(ph)) return `${p2(parts.month)}/${parts.year}`;
+  return val; // keep "YYYY-MM"
+}
+const MONTH_NAMES = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+
+function optionText(el){
+  return (el.textContent || el.label || '').trim().toLowerCase();
+}
+
+function findOptionIndex(el, candidates){
+  const opts = Array.from(el.options || []);
+  // exact first, then contains
+  for (const c of candidates){
+    const idx = opts.findIndex(o => optionText(o) === c);
+    if (idx >= 0) return idx;
+  }
+  for (const c of candidates){
+    const idx = opts.findIndex(o => optionText(o).includes(c));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function monthCandidates(m){
+  const n = Number(m);
+  if (!n || n < 1 || n > 12) return [];
+  const name = MONTH_NAMES[n-1];
+  return [
+    String(n),                     // "3"
+    String(n).padStart(2,'0'),     // "03"
+    name,                          // "march"
+    name.slice(0,3)                // "mar"
+  ];
+}
+function resolveDateSource(obj){ // entry = one experience/education item
+  // Prefer the metadata side, fall back to humanName hints
+  const side = obj._dateMeta?.side
+    || (/\b(from|start)\b/i.test(obj.humanName || '') ? 'from'
+        : /\b(to|end)\b/i.test(obj.humanName || '') ? 'to' : null);
+
+  return side;
+}
+async function fillDate(el, obj,value,{currentlyWorkHere=false}={}){
+  //console.log('filldate datemeta',obj._dateMeta);
+  // 1) Resolve ISO source
+  const side = resolveDateSource(obj);
+  const iso = value;
+  //console.log('filldate side and iso:',side,iso);
+  if (side === 'to' && currentlyWorkHere) {
+    //console.log('filDate, skipping to.. because of currently working');
+    // Many pages disable/ignore end date if "currently work here" is checked
+    return;
+  }
+
+  // 2) Parse parts
+  const parts = parseISOish(iso); //returns the data with split(year,month and day)
+  //console.log('fillDate, splitting ymd:',parts.year,parts.month,parts.day);
+  const tag = (el.tagName || '').toUpperCase();
+  //const type = (el.type || '').toLowerCase();
+
+  // 3) If we have explicit split meta (month/year pieces)
+  if (obj._dateMeta?.mode === 'split'){
+    if (!parts) return;
+    if (obj._dateMeta.part === 'year'){
+      const val = parts.year ? String(parts.year) : '';
+      if (tag === 'SELECT') {
+        //console.log('filldate year select tag val:',val)
+        const idx = findOptionIndex(el, [String(parts.year)]);
+        if (idx >= 0) { el.selectedIndex = idx; el.dispatchEvent(new Event('change', {bubbles:true})); }
+        else{//console.log('fillDate skipping tag and entering regular type fill');
+          await fillInput(el, val);}
+      } else {
+        //console.log('fillDate 2.year skipping tag and entering regular type fill');
+        await fillInput(el, val);
+      }
+      return;
+    }
+    if (obj._dateMeta.part === 'month'){
+      if (!parts.month){ /* degrade quietly if month unknown */ console.log('fillDate skipping month fill because off no value:',val); return; }
+      if (tag === 'SELECT'){
+        //console.log('filldate month select tag val:',val)
+        const idx = findOptionIndex(el, monthCandidates(parts.month));
+        if (idx >= 0){
+          el.selectedIndex = idx;
+          el.dispatchEvent(new Event('change', {bubbles:true}));
+        }else{
+          //console.log('fillDate 1.skipping month tag and entering regular type fill');
+          await fillInput(el, String(parts.month).padStart(2,'0'));
+        }
+      }else{
+        //console.log('fillDate 2.month skipping tag and entering regular type fill');
+        await fillInput(el, String(parts.month).padStart(2,'0'));
+      }
+      return;
+    }
+    if (obj._dateMeta.part === 'day'){
+      if (!parts.month){ /* degrade quietly if month unknown */ console.log('fillDate skipping day fill because off no value:',val); return; }
+      if (tag === 'SELECT'){
+        //console.log('filldate day select tag val:',val)
+        const idx = findOptionIndex(el, parts.day);
+        if (idx >= 0){
+          el.selectedIndex = idx;
+          el.dispatchEvent(new Event('change', {bubbles:true}));
+        }else{
+          //console.log('fillDate 1.skipping day tag and entering regular type fill');
+          await fillInput(el, String(parts.day).padStart(2,'0'));
+        }
+      }else{
+        //console.log('fillDate 2.month skipping tag and entering regular type fill');
+        await fillInput(el, String(parts.day).padStart(2,'0'));
+      }
+      return;
+    }
+    
+
+    
+
+  }
+  // 4) Single-field date
+  // Detect granularity if metadata missing (defensive)
+  const gran = obj._dateMeta?.granularity || detectSingleDateGranularity(el);
+  let val = formatForGranularity(gran, parts);
+  //console.log('filldate,gran value:',val);
+  // adapt to "MM/YYYY" placeholders when it's a month-year control
+  if (gran === 'month-year-single'){
+    val = adaptMonthYearToPlaceholder(el, val, parts);
+    //console.log('filldate,gran month-year-single value:',val);
+  }
+
+  // For <select> style "single" fields (rare), try options too
+  if (tag === 'SELECT'){
+    const candidates =
+      gran === 'year-single'       ? [String(parts?.year || '')]
+    : gran === 'month-year-single' ? (parts?.month ? monthCandidates(parts.month).map(c=>/\d{2}/.test(c)? `${c}/${parts.year}`: c) : [])
+    : gran === 'date-single'       ? [val, val.replace(/-/g,'/')]
+    : [val];
+
+    const idx = findOptionIndex(el, candidates.map(s => String(s).toLowerCase()));
+    if (idx >= 0){
+      el.selectedIndex = idx;
+      el.dispatchEvent(new Event('change', {bubbles:true}));
+      return;
+    }
+  }
+
+  // 5) Default to input fill
+  console.log('filldate final going for fill input with value:',val);
+  await fillInput(el, val);
+}
+const processedDateBatches = new Set(); // separate from your processedGroups for radios/checkboxes
+
+function batchKeyForDate(decision, obj){
+  const side = obj._dateMeta?.side || 'na';
+  // decision has { kind, index } like 'experience' / 2  or 'education' / 1
+  if(decision.kind && decision.index){
+    return `${decision.kind}:${decision.index}:${side}`
+  }
+  else{
+    return `${decision.dataKey}:${side}`
+  }
+}
+
+// gather up to 3 nearby split-date peers (day/month/year) with same groupId & side
+function collectLocalSplitDatePeers(inputs, startIdx, obj){
+  const side    = obj._dateMeta?.side || '';
+  const groupId = obj.groupId;
+  const peers = new Map(); // part -> {obj, idx}
+
+  // scan up to 2 back and 3 forward to capture day/month/year even if order varies
+  const lo = Math.max(0, startIdx - 2);
+  const hi = Math.min(inputs.length - 1, startIdx + 3);
+
+  for (let i = lo; i <= hi; i++){
+    const p = inputs[i];
+    if (!p || p._dateMeta?.mode !== 'split') continue;
+    if (p.groupId !== groupId) continue;
+    if ((p._dateMeta?.side || '') !== side) continue;
+
+    const part = p._dateMeta.part; // 'day' | 'month' | 'year'
+    if (part && !peers.has(part)) peers.set(part, { obj: p, idx: i });
+    if (peers.size >= 3) break;
+  }
+
+  // order month -> year -> day (month first helps some validators)
+  const order = ['month', 'year', 'day'];
+  return order.map(k => peers.get(k)?.obj).filter(Boolean);
+}
+
+//===select helpers
+function splitMultiValues(val) {
+  return val.split(/[,;/|]+/).map(v => v.trim()).filter(Boolean);
+}
+function isComplexDropdown(el) {
+  return (
+    el.getAttribute('role') === 'combobox' ||
+    el.closest('.MuiAutocomplete-root, .ant-select, .rc-select')
+  );
+}
+async function fillSelectElement(el, value, opts={}) {
+  if (!el || el.disabled || el.readOnly) return;
+  const tag = el.tagName?.toUpperCase?.();
+  const valStr = (value ?? '').toString().trim();
+  if (!valStr) return;
+  // Scroll to make it visible
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  simulateMouse(el);
+  await delay(50);
+  // ----- Case 1: Native <select> (single)
+  if (tag === 'SELECT' && !el.multiple) {
+    console.log('1. fillselectelement func,select but not multiple');
+    const match = [...el.options].find(opt =>
+      normalizeFieldNameWithSpace(opt.textContent || '').includes(
+        normalizeFieldNameWithSpace(valStr)
+      )
+    );
+    if (match) {
+      el.value = match.value;
+      el.selectedIndex = match.index;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+  }
+
+  // ----- Case 2: Native <select multiple>
+  if (tag === 'SELECT' && el.multiple) {
+    console.log('2. Fillselectelement func select and multiple');
+    const vals = splitMultiValues(valStr);
+    let changed = false;
+    for (const opt of el.options) {
+      const shouldSelect = vals.some(v =>
+        normalizeFieldNameWithSpace(opt.textContent || '').includes(
+          normalizeFieldNameWithSpace(v)
+        )
+      );
+      if (opt.selected !== shouldSelect) {
+        opt.selected = shouldSelect;
+        changed = true;
+      }
+    }
+    if (changed) {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
     }
     return true;
   }
-  // Keyboard fallback
-  // Keyboard fallback (also uses WD commit)
-  log('Dropdown: keyboard fallback');
-  const t = resolveTypingTarget(input);
-  if (t){
-    t.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));
-    t.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',bubbles:true,cancelable:true}));
-    t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
-    t.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true,cancelable:true}));
+
+  // ----- Case 3: Custom dropdown (MUI / Ant / React-Select / Ashby)
+  //Ashby selects
+  if (isComplexDropdown(el) && (isAshbyHost || isGreenhouseHost)) {
+    console.log('3. fillselectelement func select and complexdropdown');
+    const timeout = opts.timeout ?? 1500;
+    const radius  = opts.radius ?? 700;
+    const exactFirst = opts.exactFirst ?? true;
+    /*const btn = findNearestDropdownButton(el);
+    console.log('btn found in fillworkday:',btn);
+    //if (!btn) return false;
+    // 1) Open the popup
+    //simulatePointerClick(btn);
+    */
+    const findComboTextInput = (root) => {
+      if (root.tagName === 'INPUT') return root;
+      return (
+        root.querySelector('input[type="text"]') ||
+        root.querySelector('input:not([type])') ||
+        root.querySelector('[role="textbox"]') ||
+        root
+      );
+    };
+    const textBox = findComboTextInput(el);
+    if (!textBox) return false;
+    // 3.2 set the value with native setter + input events so React sees it
+    const setNative = (input, val) => {
+      const proto = Object.getPrototypeOf(input);
+      const desc  = Object.getOwnPropertyDescriptor(proto, 'value');
+      const setter = desc && desc.set;
+      if (setter) setter.call(input, val);
+      else input.value = val;
+
+      try { input.dispatchEvent(new InputEvent('beforeinput', { bubbles:true, inputType:'insertText', data:String(val) })); } catch {}
+      input.dispatchEvent(new Event('input',  { bubbles:true, composed:true }));
+      input.dispatchEvent(new Event('change', { bubbles:true, composed:true }));
+    };
+
+    // 3.3 focus, put the text, nudge with a key to trigger filtering
+    textBox.focus();
+    simulateMouse(textBox);
+    setNative(textBox, valStr);
+    textBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    textBox.dispatchEvent(new KeyboardEvent('keyup',   { key: 'ArrowDown', bubbles: true }));
+    await waitUntil(() => textBox.getAttribute('aria-expanded') === 'true', 350);
+    // 2) Find nearest listbox to this button
+    let listbox = await waitForNearestListbox(textBox, timeout, radius);
+    console.log('list box found:',listbox);
+    if (!listbox) {
+      console.log('list box not found, so trying one more time')
+      // one retry: click again then re-scan
+      simulatePointerClick(textBox);
+      await delay(120);
+      listbox = await waitForNearestListbox(textBox, timeout, radius);
+      console.log('fter trying 2nd time listbox',listbox);
+      if (!listbox) return false;
+    }
+    // 3) Try to select the option by scanning (handles virtualized lists via scrolling)
+    const picked = await scanAndSelectOption(listbox, value, { exactFirst, timeout });
+    if (!picked) {
+      // fallback: send ESC to close if still open
+      console.log('No picked options')
+      tryClosePopup(textBox, listbox);
+      return false;
+    }
+    // 4) Close the popup (many WD lists auto-close on selection; but ensure)
+    tryClosePopup(textBox, listbox);
+    return true;
   }
-  if (isWorkdaySite()){
-    await commitWorkdaySelection(input);
-  } else {
-    input.dispatchEvent(new Event('change',{bubbles:true}));
-    input.blur(); input.dispatchEvent(new Event('blur',{bubbles:true}));
+  // Case 3: Custom dropdown (MUI/Ant/React-Select etc.) 
+  if (isComplexDropdown(el)) { 
+    console.log('4. fillselectelement func select and complexdropdown2') 
+    try { 
+      el.click(); 
+      await delay(200); 
+      const list = document.querySelector('[role="listbox"], ul[role="menu"], .MuiAutocomplete-popper, .ant-select-dropdown, .rc-virtual-list-holder'); 
+      if (!list) return false; 
+      const options = [...list.querySelectorAll('[role="option"], li, div')]; 
+      const target = options.find(opt => normalizeFieldNameWithSpace(opt.textContent || '').includes( normalizeFieldNameWithSpace(valStr) ) );
+       if (target) { 
+        clickOptionLike(target); return true; 
+      } 
+      // fallback: close if not found 
+      document.body.click(); 
+    } 
+    catch (err) { 
+      console.warn('5.fillSelectElement func custom dropdown failed', err); 
+    } 
+    return true;
   }
+  return false;
+
+}
+
+/*
+async function fillSelectElement(el, value) {
+  if (!el || el.disabled || el.readOnly) return;
+
+  const tag = el.tagName?.toUpperCase?.();
+  const valStr = (value ?? '').toString().trim();
+  if (!valStr) return;
+
+  // Scroll to make it visible
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  simulateMouse(el);
+  await delay(50);
+
+  // Case 1: Native <select> (single)
+  if (tag === 'SELECT' && !el.multiple) {
+    console.log('select but not multiple');
+    console.log('complex,seelct,optiosn', ...el.options);
+    const match = [...el.options].find(opt =>
+      normalizeFieldNameWithSpace(opt.textContent || '').includes(
+        normalizeFieldNameWithSpace(valStr)
+      )
+    );
+    console.log('match:',match);
+
+    if (match) {
+      el.value = match.value;
+      el.selectedIndex = match.index;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+  }
+
+  // Case 2: Native <select multiple>
+  if (tag === 'SELECT' && el.multiple) {
+    console.log('select and multiple');
+    const vals = splitMultiValues(valStr);
+    let changed = false;
+    for (const opt of el.options) {
+      const shouldSelect = vals.some(v =>
+        normalizeFieldNameWithSpace(opt.textContent || '').includes(
+          normalizeFieldNameWithSpace(v)
+        )
+      );
+      if (opt.selected !== shouldSelect) {
+        opt.selected = shouldSelect;
+        changed = true;
+      }
+    }
+    if (changed) {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return true;
+  }
+
+  // Case 3: Custom dropdown (MUI/Ant/React-Select etc.)
+  if (isComplexDropdown(el)) {
+    console.log('selct and complexdropdown')
+    try {
+      el.click();
+      await delay(200);
+
+      const list = document.querySelector('[role="listbox"], ul[role="menu"], .MuiAutocomplete-popper, .ant-select-dropdown, .rc-virtual-list-holder');
+      if (!list) return false;
+
+      const options = [...list.querySelectorAll('[role="option"], li, div')];
+      const target = options.find(opt =>
+        normalizeFieldNameWithSpace(opt.textContent || '').includes(
+          normalizeFieldNameWithSpace(valStr)
+        )
+      );
+
+      if (target) {
+        clickOptionLike(target);
+        return true;
+      }
+
+      // fallback: close if not found
+      document.body.click();
+    } catch (err) {
+      console.warn('fillSelectElement custom dropdown failed', err);
+    }
+  }
+
+  return false;
+}
+*/
+function isWorkdayCombo(el){ 
+  // Prefer the nearest WD-ish container if present, else fall back to a div
+  const root = el.closest(
+    '[data-automation-id*="select"],' +                 // e.g., multiSelectContainer, selectDropdown, etc.
+    '[data-uxi-widget-type="selectinput"],' +          // WD select input widget
+    '[data-automation-id*="multiSelect"],' +           // multiSelectContainer
+    '[data-automation-id*="prompt"],' +                // promptIcon / promptOption
+    'div'
+  );
+  if (!root) return false;
+
+  // Base signals (your originals)
+  const hasButton = !!root.querySelector('button[aria-haspopup="listbox"], button[aria-expanded]');
+  const hasText   = !!root.querySelector('input[type="text"], input:not([type]), input[role="combobox"], [role="combobox"]');
+  const hasArrow  = !!root.querySelector('[data-automation-id="promptIcon"], [class*="promptIcon"], span, svg, i');
+
+  // Workday-specific strong signals (seen in your screenshot)
+  const hasWDAtt = (
+    root.matches('[data-automation-id], [data-uxi-widget-type]') ||
+    !!root.querySelector(
+      '[data-automation-id*="select"],' +
+      '[data-automation-id*="multiSelect"],' +
+      '[data-automation-id*="prompt"],' +
+      '[data-uxi-widget-type="selectinput"]'
+    )
+  );
+
+  // Nearby listbox cues (often rendered/telegraphed even if virtualized)
+  const hasListboxHints = !!root.querySelector(
+    '[role="listbox"], [aria-controls*="listbox"], [id*="listbox"], [data-automation-id*="selectDropdown"]'
+  );
+
+  // Two ways to declare "combo":
+  // 1) Your original triad (button + text + arrow)
+  // 2) WD multiselect variant (text + WD signals + (arrow OR listbox hints))
+  const classicCombo = hasButton && hasText && hasArrow;
+  const wdCombo = hasText && hasWDAtt && (hasArrow || hasListboxHints);
+
+  const result = classicCombo || wdCombo;
+  // Optional debug
+  // console.log({ classicCombo, wdCombo, hasButton, hasText, hasArrow, hasWDAtt, hasListboxHints });
+  return result;
+}
+
+function tryClosePopup(btn, listbox) {
+  // If still expanded, try ESC first (less intrusive than body click)
+  if (btn?.getAttribute('aria-expanded') === 'true') {
+    listbox?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    listbox?.dispatchEvent(new KeyboardEvent('keyup',   { key: 'Escape', bubbles: true }));
+  }
+  // If stubborn, click outside once
+  if (btn?.getAttribute('aria-expanded') === 'true') {
+    document.body.click();
+  }
+}
+
+function simulatePointerClick(el) {
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + Math.min(r.height / 2, 16);
+  el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent('mousedown',    { bubbles: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent('mouseup',      { bubbles: true, clientX: x, clientY: y }));
+  el.click();
+  el.dispatchEvent(new PointerEvent('pointerup',  { bubbles: true, clientX: x, clientY: y }));
+}
+
+function isClickableVisible(el){
+  if (!isVisible(el)) return false;
+  const cs = getComputedStyle(el);
+  return cs.pointerEvents !== 'none';
+}
+
+function getCenter(el){
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width/2, y: r.top + r.height/2 };
+}
+
+function distance(a,b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+
+function norm(s){
+  return (s ?? '')
+    .toString()
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')   // strip accents
+    .replace(/[^a-z0-9+%&().,\-\/\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function fuzzyScore(txt, want){
+  if (!txt || !want) return 0;
+  if (txt === want) return 1;
+  if (txt.startsWith(want)) return 0.9;
+  if (txt.includes(want)) return Math.min(0.88, want.length / Math.max(txt.length, 1));
+  // token overlap
+  const A = new Set(txt.split(' ')), B = new Set(want.split(' '));
+  let hit = 0; B.forEach(t => { if (A.has(t)) hit++; });
+  return hit / Math.max(B.size, 1) * 0.7;
+}
+
+function clickOptionLike(opt){
+  opt.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  opt.dispatchEvent(new MouseEvent('mousedown',    { bubbles: true }));
+  opt.dispatchEvent(new MouseEvent('mouseup',      { bubbles: true }));
+  opt.click();
+  opt.dispatchEvent(new PointerEvent('pointerup',  { bubbles: true }));
+}
+
+function delay(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function waitUntil(pred, ms = 600, step = 30){
+  const t0 = performance.now();
+  while (performance.now() - t0 < ms) {
+    if (pred()) return true;
+    await delay(step);
+  }
+  return false;
+}
+//Find the nearest visible listbox/menu to the anchor (button) within a radius.
+async function waitForNearestListbox(anchor, timeout = 1200, radius = 700) {
+  const start = performance.now();
+  const anchorCenter = getCenter(anchor);
+
+  const pick = () => {
+    // Common WD portals: role=listbox/menu, sometimes data-automation-id=listbox
+    const candidates = [
+      ...document.querySelectorAll('[role="listbox"], [role="menu"], [data-automation-id="listbox"]')
+    ].filter(isVisible);
+
+    let best = null, bestD = Infinity;
+    for (const c of candidates) {
+      const d = distance(anchorCenter, getCenter(c));
+      if (d < bestD && d <= radius) { best = c; bestD = d; }
+    }
+    return best;
+  };
+
+  while (performance.now() - start < timeout) {
+    const lb = pick();
+    if (lb) return lb;
+    await delay(40);
+  }
+  return null;
+}
+/**
+ * Scrolls a (possibly virtualized) listbox to find and click the best option.
+ */
+async function scanAndSelectOption(listbox, targetText, { exactFirst = true, timeout = 1500 } = {}) {
+  const start = performance.now();
+  const want = norm(targetText);
+
+  // Ensure we start from the top
+  listbox.scrollTop = 0;
+
+  const seen = new Map(); // text -> element (last seen)
+  let bestLoose = null;   // { el, score, txt }
+
+  while (performance.now() - start < timeout) {
+    const options = collectOptionNodes(listbox);
+    console.log('options collected',options);
+
+    for (const opt of options) {
+      const txt = norm(opt.textContent);
+      if (!txt) continue;
+
+      // Dedup by text; keep the *currently visible* element so clicks work
+      seen.set(txt, opt);
+
+      if (exactFirst && (txt === want || txt.includes(want))) {
+        clickOptionLike(opt);
+        return true;
+      }
+
+      const score = fuzzyScore(txt, want);
+      if (!bestLoose || score > bestLoose.score) bestLoose = { el: opt, score, txt };
+    }
+
+    // If we’re at the bottom, break
+    const atBottom = Math.ceil(listbox.scrollTop + listbox.clientHeight) >= listbox.scrollHeight;
+    if (atBottom) break;
+
+    // Scroll further down to trigger virtualization
+    listbox.scrollTop = Math.min(listbox.scrollTop + Math.max(40, Math.floor(listbox.clientHeight * 0.9)), listbox.scrollHeight);
+    await delay(80);
+  }
+
+  // If exact/contains not found, try best fuzzy match (threshold keeps it sane)
+  if (bestLoose && bestLoose.score >= 0.30) {
+    clickOptionLike(bestLoose.el);
+    return true;
+  }
+
+  return false;
+}
+function isToggleButton(n){
+  if (!n || n.nodeType !== 1) return false;
+  const tag = n.tagName?.toLowerCase();
+  if (tag === 'button') {
+    return n.hasAttribute('aria-haspopup') || n.hasAttribute('aria-expanded');
+  }
+  // Some UIs use div/span with role=button
+  if ((n.getAttribute('role') === 'button') && n.hasAttribute('aria-haspopup')) return true;
+  return false;
+}
+
+/**
+ * Finds the nearest dropdown toggle button for a Workday-like combo.
+ * Looks at self, then scans container & a few ancestors for a matching button.
+ */
+function findNearestDropdownButton(el, maxHops = 3){
+  if (!el) return null;
+  if (isToggleButton(el)) return el; // if caller passed the button itself
+
+  // Prefer a semantic container first
+  let container = el.closest('[data-automation-id], [role="group"], .wd-select, .wd-input, .MuiAutocomplete-root, .ant-select, div');
+
+  // Walk up a few levels; within each, query for a proper toggle button
+  let node = container || el;
+  for (let i = 0; node && i <= maxHops; i++, node = node.parentElement) {
+    const btn = node.querySelector(
+      'button[aria-haspopup="listbox"], button[aria-expanded], [role="button"][aria-haspopup="listbox"]'
+    );
+    if (isToggleButton(btn)) return btn;
+  }
+  return null;
+}
+
+function collectOptionNodes(listbox) {
+  // Workday variants + fallbacks (role=option most common)
+  const sel = [
+    '[role="option"]',
+    '[data-automation-id="option"]',
+    '[role="menuitem"]',
+    'li',
+    '.wd-option' // rare custom class; harmless if absent
+  ].join(',');
+
+  // Only return clickable/visible ones
+  return [...listbox.querySelectorAll(sel)].filter(isClickableVisible);
+}
+/**
+ * Open a Workday-style dropdown via its button, find the nearest popup listbox,
+ * scroll through all options (even virtualized), select the best match, and close.
+ *
+ * @param {HTMLElement} el - the toggle button itself OR any descendant of the WD combo
+ * @param {string} value  - visible text you want to pick
+ * @param {object} opts   - { timeout?: number, radius?: number, exactFirst?: boolean }
+ * @returns {Promise<boolean>}
+ */
+//workday selects
+async function fillWorkdayByButton(el, value, opts = {}) {
+  const timeout = opts.timeout ?? 1500;
+  const radius  = opts.radius ?? 700;
+  const exactFirst = opts.exactFirst ?? true;
+  const btn = findNearestDropdownButton(el);
+  console.log('btn found in fillworkday:',btn);
+  if (!btn) return false;
+  // 1) Open the popup
+  simulatePointerClick(btn);
+  await waitUntil(() => btn.getAttribute('aria-expanded') === 'true', 350);
+  // 2) Find nearest listbox to this button
+  let listbox = await waitForNearestListbox(btn, timeout, radius);
+  console.log('list box found:',listbox);
+  if (!listbox) {
+    console.log('list box not found, so trying one more time')
+    // one retry: click again then re-scan
+    simulatePointerClick(btn);
+    await delay(120);
+    listbox = await waitForNearestListbox(btn, timeout, radius);
+    console.log('fter trying 2nd time listbox',listbox);
+    if (!listbox) return false;
+  }
+  // 3) Try to select the option by scanning (handles virtualized lists via scrolling)
+  const picked = await scanAndSelectOption(listbox, value, { exactFirst, timeout });
+  if (!picked) {
+    // fallback: send ESC to close if still open
+    console.log('No picked options')
+    tryClosePopup(btn, listbox);
+    return false;
+  }
+
+  // 4) Close the popup (many WD lists auto-close on selection; but ensure)
+  tryClosePopup(btn, listbox);
   return true;
 }
 
+// ========= RESUME HELPERS (unchanged except for minor hygiene) =========
+const FILE_POS_KW_RE = /\b(resume|cv|curriculum\s*vitae|cover\s*letter)\b/i;
+const FILE_NEG_KW_RE = /\b(attach|upload|choose|select|browse|drag|drop|click|tap|select\s+one)\b/i;
+const FILE_SIZE_HINT_RE = /\b(?:max(?:imum)?\s*size|size\s*limit)\b.*|\(\s*\d+(?:\.\d+)?\s*(kb|mb|gb)\s*max\)/i;
 
-async function selectMultipleFromDropdown(input, values){
-  const picked = new Set();
-  for (const raw of values){
-    const v = normalizeFieldNameWithSpace(String(raw));
-    if (!v) continue;
+function isFileField(el){ return (el?.type||'').toLowerCase() === 'file'; }
+function stripFileCtas(s){
+  if(!s) return '';
+  return s.replace(FILE_SIZE_HINT_RE,' ').replace(/\b(or)\b/ig,' ').replace(/\s+/g,' ').trim();
+}
+function findFileFieldName(field, maxHops = 6){
+  if(!isFileField(field)) return '';
+  const HEADING_SEL = 'h1,h2,h3,h4,h5,h6,span,strong,[role="heading"],legend,[data-automation-id],label';//,[data-automation-id*="Heading"],[data-automation-id*="title"],label';
+  if(field.id){
+    const lab = document.querySelector(`label[for="${CSS.escape(field.id)}"]`);
+    const t = stripFileCtas(lab?.textContent || '');
+    if(FILE_POS_KW_RE.test(t)) return normalizeFieldNameWithSpace(t);
+  }
+  let el = field;
+  for(let hop=0; el && el!==document.body && hop<=maxHops; hop++, el = el.parentElement){
+    const h = el.querySelector(HEADING_SEL)
+    if(h?.textContent){
+      const t = stripFileCtas(h.textContent);
+      if(FILE_POS_KW_RE.test(t)) return normalizeFieldNameWithSpace(t);
+    }
+    const selfTxt = stripFileCtas(el.textContent || '');
+    if(FILE_POS_KW_RE.test(selfTxt) && selfTxt.split(/\s+/).length > 2)
+      return normalizeFieldNameWithSpace(selfTxt);
 
-    input.click();
-    await typeToInput(input, raw);
-
-    let options = await gatherDropdownOptions(6);
-    const opt = await selectBestOption(v, options);
-    if (opt){
-      opt.scrollIntoView({behavior:'smooth', block:'center'});
-      await delay(40);
-      opt.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));
-      opt.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true}));
-      opt.click();
-      input.dispatchEvent(new Event('change',{bubbles:true}));
-
-      if (isWorkdaySite()){
-        await commitWorkdaySelection(input);
-      } else {
-        // keep focus for next chip in non-WD UIs
-        await delay(120);
+    let prev = el.previousElementSibling;
+    if(prev){
+      const prevTxt = stripFileCtas(prev.textContent || '');
+      if(FILE_POS_KW_RE.test(prevTxt)) return normalizeFieldNameWithSpace(prevTxt);
+      const prevHead = prev.matches(HEADING_SEL) ? prev : prev.querySelector(HEADING_SEL);
+      if(prevHead?.textContent){
+        const t = stripFileCtas(prevHead.textContent);
+        if(FILE_POS_KW_RE.test(t)) return normalizeFieldNameWithSpace(t);
       }
-
-    picked.add(v);
-    input.click(); // reopen for next value
-    await delay(60);
-
-    } else {
-      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
-      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true}));
-      await delay(60);
     }
+    el = el.parentElement;
   }
-  input.blur(); input.dispatchEvent(new Event('blur',{bubbles:true}));
-  log('Multi-select picked count', picked.size);
-  return picked.size > 0;
-}
-
-// ===== File handling (resume) =====
-const GENERIC_UPLOAD_STRINGS = [
-  'choose file','choose files','upload','upload file','upload files',
-  'attach','attach file','attach files','drag','drop','drag and drop',
-  'please select','please select one','browse','select a file','select file',
-  'drop files here','no file chosen','supported formats','max size'
-];
-function isGenericUploadPhrase(s) {
-  const x = normalizeFieldNameWithSpace(s);
-  return GENERIC_UPLOAD_STRINGS.some(g => x === g || x.includes(g));
-}
-function bestLabelForFileInput(input) {
-  if (input.id) {
-    const lab = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
-    const t = lab?.textContent?.trim();
-    if (t && !isGenericUploadPhrase(t)) return normalizeFieldNameWithSpace(t);
-  }
-  let node = input;
-  while (node && node !== document.body) {
-    if (node.tagName === 'LABEL') {
-      const t = node.textContent?.trim();
-      if (t && !isGenericUploadPhrase(t)) return normalizeFieldNameWithSpace(t);
-    }
-    node = node.parentElement;
-  }
-  const fs = input.closest('fieldset');
-  const legend = fs?.querySelector('legend')?.textContent?.trim();
-  if (legend && !isGenericUploadPhrase(legend)) return normalizeFieldNameWithSpace(legend);
-
-  const head = input.closest('section,div,form')?.querySelector('h1,h2,h3,.section-title,.title');
-  const headTxt = head?.textContent?.trim();
-  if (headTxt && !isGenericUploadPhrase(headTxt)) return normalizeFieldNameWithSpace(headTxt);
-
-  const sibs = [];
-  let p = input.previousElementSibling;
-  for (let i=0; i<3 && p; i++, p = p.previousElementSibling) {
-    const t = p.textContent?.trim();
-    if (t && !isGenericUploadPhrase(t)) sibs.push(t);
-  }
-  if (sibs.length) {
-    const best = sibs.sort((a,b)=> b.length - a.length)[0];
-    return normalizeFieldNameWithSpace(best);
-  }
-  const near = nearestTextAround(input);
-  if (near && !isGenericUploadPhrase(near)) return near;
   return '';
+}
+function setFilesWithNativeSetter(input, fileList) {
+  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
+  if (desc?.set) desc.set.call(input, fileList);
+  else input.files = fileList;
 }
 function dataURLtoBlob(dataurl){
   const [meta, data] = dataurl.split(',');
@@ -749,11 +1353,6 @@ function fetchResumeFromBackground(fileUrl){
       });
     }catch(e){ reject(e); }
   });
-}
-function setFilesWithNativeSetter(input, fileList) {
-  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
-  if (desc?.set) desc.set.call(input, fileList);
-  else input.files = fileList;
 }
 async function simulateFileSelectionFromBackground(inputElement, fileUrl){
   const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
@@ -775,10 +1374,10 @@ async function simulateFileSelectionFromBackground(inputElement, fileUrl){
   inputElement.blur();
   inputElement.dispatchEvent(new Event('blur',{bubbles:true}));
 
-  resumeUploadHappened = true;
-  log('Resume set via background', filename);
+  //resumeUploadHappened = true;
+  //log('Resume set via background', filename);
   return true;
-} 
+}
 async function tryAttachToDropzones(fileUrl){
   const zones = document.querySelectorAll('.dropzone, [data-dropzone], .file-drop, .upload-drop, [role="button"].drop, .upload-area, .dz-clickable, .dz-default, .attachment-drop, .file-uploader');
   if(!zones.length) return false;
@@ -802,289 +1401,693 @@ async function tryAttachToDropzones(fileUrl){
       z.dispatchEvent(drop);
       await delay(400);
       z.classList.remove('autofill-drop-indicator');
-      resumeUploadHappened = true;
-      log('Dropzone upload attempted');
+      //resumeUploadHappened = true;
+      //log('Dropzone upload attempted');
       return true;
     }catch(e){
-      log('Dropzone error', e);
-      z.remove?.classList?.remove('autofill-drop-indicator');
+      //log('Dropzone error', e);
+      z.classList?.remove('autofill-drop-indicator');
     }
   }
   return false;
 }
-async function handleFileInput(input, fileUrl){
-  try{
+/**
+ * Attach a resume file to an <input type="file"> and BLOCK until the site finishes
+ * uploading/parsing (or fails/timeout). Always returns a result object.
+ *
+ * @param {HTMLInputElement} input
+ * @param {string} fileUrl
+ * @returns {Promise<{method:'native'|'dropzone'|'fallback', status:'parsed'|'failed'|'timeout'|'attach-failed', elapsedMs?:number}>}
+ */
+async function handleFileInput(input, fileUrl) {
+  try {
+    // --- Path 1: set the file directly on the input
     const ok = await simulateFileSelectionFromBackground(input, fileUrl);
-    if(ok) { try { await waitForResumeParseToFinish(); } catch {} return true; }
-  }catch(e){ log('Native file set failed, trying dropzone', e); }
-  try{
+    if (ok) {
+      const res = await waitForResumeParseNetworkFirst(input, {
+        idleMs: 1200,
+        timeoutMs: 30000,
+        maxEvents: 160
+      });
+      try {
+        input.dataset.resumeParseStatus = res.status;
+        input.dataset.resumeParseElapsed = String(res.elapsedMs ?? '');
+      } catch {}
+      return { method: 'native', ...res };
+    }
+  } catch (e) {
+    console.log('Native file set failed, trying dropzone', e);
+  }
+
+  try {
+    // --- Path 2: simulate a drag&drop onto common dropzones
     const ok2 = await tryAttachToDropzones(fileUrl);
-    if(ok2) { try { await waitForResumeParseToFinish(); } catch {} return true; }
-  }catch(e){ log('Dropzone attach failed', e); }
-  try{
+    if (ok2) {
+      const res = await waitForResumeParseNetworkFirst(input, {
+        idleMs: 1200,
+        timeoutMs: 30000,
+        maxEvents: 160
+      });
+      try {
+        input.dataset.resumeParseStatus = res.status;
+        input.dataset.resumeParseElapsed = String(res.elapsedMs ?? '');
+      } catch {}
+      return { method: 'dropzone', ...res };
+    }
+  } catch (e) {
+    console.log('Dropzone attach failed', e);
+  }
+
+  // --- Path 3: we couldn’t attach; leave a link (your existing fallback UI does this elsewhere)
+  try {
     const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
     const filename = src.split('/').pop() || 'resume.pdf';
     const a = document.createElement('a');
-    a.href = src; a.textContent = filename; a.target='_blank';
-    a.style.display='inline-block'; a.style.marginLeft='8px'; a.style.color='#06c'; a.style.textDecoration='underline';
+    a.href = src; a.textContent = filename; a.target = '_blank';
+    a.style.display = 'inline-block'; a.style.marginLeft = '8px';
+    a.style.color = '#06c'; a.style.textDecoration = 'underline';
     input.parentNode?.insertBefore(a, input.nextSibling);
-  }catch{}
-  return false;
+  } catch {}
+
+  return { status: 'attach-failed', method: 'fallback' };
 }
 
-// ===== Fallback scoring =====
-function runScoringFallback(candidates, keys) {
-  let best = { candidate: "", key: "", score: -Infinity };
-  const tok = s => normalizeFieldNameWithSpace(s).split(/\s+/).filter(Boolean);
-  for (const cand of candidates) {
-    const candTokens = tok(cand);
-    for (const key of keys) {
-      const keyTokens = tok(key);
-      const candStr = normalizeFieldNameWithSpace(cand);
-      const keyStr = normalizeFieldNameWithSpace(key);
-      let score = 0;
+const RESUME_POS = [/\bresume\b/i, /\bcv\b/i, /\bcurriculum\s*vitae\b/i, /\brésumé\b/i];
+const RESUME_NEG = [/\bcover\s*letter\b/i, /\btranscript\b/i, /\breferences?\b/i];
+function isResumeHumanName(name=''){
+  const t = String(name || '').trim();
+  if (!t) return false;
+  if (RESUME_NEG.some(r => r.test(t))) return false;
+  return RESUME_POS.some(r => r.test(t));
+}
+function markAutofilled(el, source='resume') {
+  try { el.setAttribute('data-autofilled', 'true'); } catch {}
+  try { el.dataset.afSource = source; } catch {}
+}
 
-      if (candStr === keyStr) score += 200;
-      if (candStr.includes(keyStr) || keyStr.includes(candStr)) {
-        const ratio = Math.min(candStr.length, keyStr.length) / Math.max(candStr.length, keyStr.length);
-        score += ratio > 0.7 ? 80 : 30;
-      }
-      const setC = new Set(candTokens);
-      const setK = new Set(keyTokens);
-      const inter = [...setC].filter(t=>setK.has(t)).length;
-      const union = new Set([...setC, ...setK]).size || 1;
-      score += 100 * (inter / union);
 
-      if (keyStr.includes('first') && candStr.includes('first')) score += 10;
-      if (keyStr.includes('last') && candStr.includes('last')) score += 10;
-      if (keyStr.includes('phone') && candStr.includes('phone')) score += 10;
-      if (keyStr.includes('email') && candStr.includes('email')) score += 10;
+/*
+async function resumeFirstFromInputs(inputs, autofillData,watchMs = 1000) {
+  if (!Array.isArray(inputs) || !inputs.length) return { ok:false, reason:'no-inputs' };
+  //console.log('resume parsing is started');
+  const resumeInputObj = inputs.filter(o => {
+    const el = o.element;
+    if(el.type.toLowerCase()==='file' && o.humanName){
+      return isResumeHumanName(o.humanName);
+    }
+  });
+  if (resumeInputObj.length === 0) {
+    return { ok: false, reason: 'no-resume-file-input' };
+  }
+  //if (!resumeInputObj) return { ok:false, reason:'no-resume-file-input' };
+  for(const r of resumeInputObj){
+    if(r.humanName.includes('autofill')){
+      return { ok:false, reason:'Autofill-resume-file-input' };
+    }
+    else{
+      const resumeFile = autofillData['resume'];
+      try{ await handleFileInput(resumeInputObj.element, resumeFile); await delay(2000); }catch(e){ log('File handle error', e); }
+      markAutofilled(resumeInputObj.element, 'resume');
 
-      if (score > best.score) best = { candidate: cand, key, score };
     }
   }
-  log('Fallback best key', best);
-  return best.key;
-}
 
-// ===== React/Workday-safe value setting =====
-function setValueWithNativeSetter(el, val){
-  try{
-    let proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
-              : el instanceof HTMLInputElement ? HTMLInputElement.prototype
-              : HTMLElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (desc?.set) desc.set.call(el, val);
-    else el.value = val;
-  }catch{ el.value = val; }
-}
-function fireInputEvents(el, val){
-  try{
-    el.dispatchEvent(new InputEvent('input', { bubbles:true, cancelable:true, data:String(val), inputType:'insertFromPaste' }));
-  }catch{
-    el.dispatchEvent(new Event('input', { bubbles:true, cancelable:true }));
+  /*
+  if(resumeInputObj && resumeInputObj.humanName.includes('autofill')){
+    return { ok:false, reason:'Autofill-resume-file-input' };
+
+  };
+
+  const resumeFile = autofillData['resume'];
+  try{ await handleFileInput(resumeInputObj.element, resumeFile); await delay(2000); }catch(e){ log('File handle error', e); }
+  markAutofilled(resumeInputObj.element, 'resume');
+  const candidates = inputs
+    .map(o => o.element)
+    .filter(el => el && el.isConnected && !el.disabled && !el.readOnly);
+
+  const before = new Map();
+  for (const el of candidates) before.set(el, snapshotValue(el));
+
+  const end = Date.now() + watchMs;
+  while (Date.now() < end) {
+    await new Promise(r => setTimeout(r, 200));
+    for (const el of candidates) {
+      if (!el.isConnected) continue;
+      const prev = before.get(el);
+      const now = snapshotValue(el);
+      if (String(prev) !== String(now) && hasMeaningfulValue(el)) {
+        markAutofilled(el, 'resume');
+        before.set(el, now);
+      }
+    }
   }
-  el.dispatchEvent(new Event('change', { bubbles:true, cancelable:true }));
+  return { ok:true };
 }
-
-
-async function typeCharacters(el, text){
-  el.focus();
-  try{ el.setSelectionRange(0, (el.value||'').length); }catch{}
-  for (const ch of String(text)){
-    el.dispatchEvent(new KeyboardEvent('keydown',{key: ch,bubbles:true,cancelable:true}));
-    setValueWithNativeSetter(el, (el.value||'') + ch);
-    fireInputEvents(el, ch);
-    el.dispatchEvent(new KeyboardEvent('keyup',{key: ch,bubbles:true,cancelable:true}));
-    await delay(10);
+*/
+/*
+async function resumeFirstFromInputs(inputs, autofillData, watchMs = 1000, { fillAll = true } = {}) {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    return { ok: false, reason: 'no-inputs' };
   }
-  el.dispatchEvent(new KeyboardEvent('keydown',{key: 'Tab',bubbles:true,cancelable:true}));
-  el.dispatchEvent(new KeyboardEvent('keyup',{key: 'Tab',bubbles:true,cancelable:true}));
+
+  const resumeFile = autofillData?.resume;
+  if (!resumeFile) {
+    return { ok: false, reason: 'no-resume-file-path' };
+  }
+
+  // Pick all <input type="file"> that look like "resume/CV..."
+  const candidates = inputs.filter(o => {
+    const el = o?.element;
+    return el && (el.type || '').toLowerCase() === 'file' && o?.humanName && isResumeHumanName(o.humanName);
+  });
+
+  if (candidates.length === 0) {
+    return { ok: false, reason: 'no-resume-file-input' };
+  }
+
+  // Partition: skip any “autofill” resume field; keep regular ones
+  const isAutoFillish = (txt='') => /auto[\s-]?fill/i.test(String(txt));
+  const nonAutofill = [];
+  const skippedAutofill = [];
+
+  for (const c of candidates) {
+    const idn = ((c.element.id || '') + ' ' + (c.element.name || '')).toLowerCase();
+    const hn  = String(c.humanName || '');
+    if (isAutoFillish(hn) || isAutoFillish(idn)) skippedAutofill.push(c);
+    else nonAutofill.push(c);
+  }
+
+  if (nonAutofill.length === 0) {
+    return { ok: false, reason: 'only-autofill-resume-inputs', skippedAutofill: skippedAutofill.length };
+  }
+
+  let filled = 0;
+  let lastError = null;
+
+  for (const r of nonAutofill) {
+    const el = r.element;
+    if (!el || el.getAttribute('data-autofilled') === 'true') continue;
+
+    try {
+      await handleFileInput(el, resumeFile);
+      await delay(Math.max(300, watchMs));         // give UI a beat
+      markAutofilled(el, 'resume');
+      filled += 1;
+      if (!fillAll) break;                         // stop after first if desired
+    } catch (e) {
+      lastError = e;
+      // try next candidate
+    }
+  }
+
+  if (filled > 0) {
+    return { ok: true, filled, attempted: nonAutofill.length, skippedAutofill: skippedAutofill.length };
+  }
+
+  return {
+    ok: false,
+    reason: 'attach-failed',
+    attempted: nonAutofill.length,
+    skippedAutofill: skippedAutofill.length,
+    error: lastError?.message || String(lastError || '')
+  };
+}
+*/
+/**
+ * Find likely resume inputs among your discovered inputs, attach the resume file,
+ * WAIT for parse completion, and propagate a status result up to the caller.
+ *
+ * @param {Array<{element: HTMLInputElement, humanName?: string}>} inputs
+ * @param {{resume?: string}} autofillData
+ * @param {number} watchMs  (unused now; kept for signature compatibility)
+ * @param {{fillAll?: boolean}} options
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   filled?: number,
+ *   attempted?: number,
+ *   plain_count?: number,
+ *   autofill_count?: number,
+ *   status: 'parsed'|'failed'|'timeout'|'attach-failed'|'unknown',
+ *   elapsedMs?: number|null,
+ *   method?: 'native'|'dropzone'|'fallback'|null,
+ *   reason?: string,
+ *   error?: string
+ * }>}
+ */
+async function resumeFirstFromInputs(inputs, autofillData, watchMs = 1000, { fillAll = true } = {}) {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    return { ok: false, reason: 'no-inputs', status: 'attach-failed' };
+  }
+  // If this frame has no attachable inputs/dropzones, bail fast
+  if (!canAttachResumeInThisFrame()) {
+    return { ok: false, reason: 'unattachable-in-this-frame', status: 'attach-failed' };
+  }
+  const resumeFile = autofillData?.resume;
+  if (!resumeFile) {
+    return { ok: false, reason: 'no-resume-file-path', status: 'attach-failed' };
+  }
+
+  // Pick all <input type="file"> that look like "resume/CV..."
+  const candidates = inputs.filter(o => {
+    const el = o?.element;
+    return el && (el.type || '').toLowerCase() === 'file' && o?.humanName && isResumeHumanName(o.humanName);
+  });
+  if (candidates.length === 0) {
+    return { ok: false, reason: 'no-resume-file-input', status: 'attach-failed' };
+  }
+
+  // Partition: prefer plain resume inputs, but DO NOT skip “autofill” ones — use as fallback
+  const isAutoFillish = (txt = '') => /auto[\s-]?fill/i.test(String(txt));
+  const plain = [];
+  const autoFillish = [];
+
+  for (const c of candidates) {
+    const idn = ((c.element.id || '') + ' ' + (c.element.name || '')).toLowerCase();
+    const hn  = String(c.humanName || '');
+    (isAutoFillish(hn) || isAutoFillish(idn)) ? autoFillish.push(c) : plain.push(c);
+  }
+
+  const runList = plain.length ? plain : autoFillish;
+
+  let filled = 0;
+  let lastResult = null;
+  let lastError = null;
+
+  for (const r of runList) {
+    const el = r.element;
+    if (!el || el.getAttribute('data-autofilled') === 'true') continue;
+
+    try {
+      const result = await handleFileInput(el, resumeFile); // blocks until parsed/failed/timeout
+      lastResult = result;
+
+      if (result && result.status && result.status !== 'attach-failed') {
+        markAutofilled(el, 'resume');
+        filled += 1;
+        if (!fillAll) break; // stop after first if desired
+      } else {
+        // try next resume input candidate
+        continue;
+      }
+    } catch (e) {
+      lastError = e;
+      // continue to next candidate
+    }
+  }
+
+  if (filled > 0) {
+    return {
+      ok: true,
+      filled,
+      attempted: runList.length,
+      plain_count: plain.length,
+      autofill_count: autoFillish.length,
+      status: lastResult?.status || 'unknown',
+      elapsedMs: lastResult?.elapsedMs ?? null,
+      method: lastResult?.method || null
+    };
+  }
+
+  return {
+    ok: false,
+    reason: 'attach-failed',
+    attempted: runList.length,
+    plain_count: plain.length,
+    autofill_count: autoFillish.length,
+    error: lastError?.message || String(lastError || ''),
+    status: lastResult?.status || 'attach-failed'
+  };
 }
 
-// ===== Core fill =====
-async function fillInput(el, value, opts = { mapped:false }){
-  if(!el || el.disabled || el.readOnly) return;
-  const tag = el.tagName?.toUpperCase?.() || '';
-  const type = (el.type||'text').toLowerCase();
+const isLeverHost = /(?:^|\.)lever\.co$/i.test(location.hostname);
+function stripRequiredAsterisk(s){ return s.replace(/\s*[:*]\s*$/, ''); }
+// kill live-status & helper text that leaks into container text on many hosts
+const CONTAINER_NOISE_RE =
+/\b(required|optional|characters?\s*remaining|drag\s*(?:and|&)\s*drop|click to upload|upload(?: a)? file|choose file|attach(?:ment)?|file size.*|max(?:imum)? size.*|no location found|try entering a different location|loading|analyzing resume|couldn'?t auto read resume|success|error|warning|info)\b.*$/i;
 
-  let normVal = value;
-  if(normVal===true) normVal='yes';
-  if(normVal===false) normVal='no';
+function dropContainerNoise(s){
+  return (s || '')
+    .replace(CONTAINER_NOISE_RE, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
 
-  log('Filling input', { tag, type, value: normVal, mapped: !!opts.mapped });
+// treat very machiney `name=` values as last resort
+function looksMachineName(s){
+  if(!s) return false;
+  if(/cards?\[/.test(s)) return true;                          // Lever custom questions
+  if(/[a-f0-9]{8}-[a-f0-9-]{13,}/i.test(s)) return true;       // UUID-ish
+  if(/\b(field|input|question)\d+\b/i.test(s)) return true;
+  // accept obvious good keys
+  if (/\b(email|phone|name|first|last|company|location|address|city|state|zip|linkedin|github|portfolio|website)\b/i.test(s)) {
+    return false;
+  }
+  return /^[a-z0-9_\[\]\-]+$/i.test(s);                        // no spaces ⇒ likely a key
+}
 
-  simulateMouseMove(el);
-  el.scrollIntoView({behavior:'smooth', block:'center'});
-  await delay(40);
+// =====================
+// Lever-specific: pull the visible question text
+// =====================
+const leverQuestionCache = new WeakMap();
+function leverQuestionTextFor(field){
+  if(!isLeverHost || !field) return '';
+  const li = field.closest('li.application-question');
+  if(!li) return '';
+  if(leverQuestionCache.has(li)) return leverQuestionCache.get(li);
 
-  const complex = isComplexDropdown(el);
+  const txtEl = li.querySelector('.application-label .text, .application-label');
+  let txt = txtEl?.textContent || '';
+  txt = stripRequiredAsterisk(txt).trim();
 
-  // MULTI-SELECT <select>
-  if (tag === 'SELECT' && el.multiple) {
-    const desired = splitMultiValues(normVal);
-    const optsList = Array.from(el.options).map(opt => ({
-      element: opt,
-      text: normalizeFieldNameWithSpace(opt.textContent || opt.value || '')
-    }));
-    for (const raw of desired){
-      const nv = normalizeFieldNameWithSpace(raw);
-      let hit = optsList.find(o => o.text === nv) || optsList.find(o => o.text.includes(nv));
-      if (!hit) {
-        const toks = new Set(nv.split(/\s+/).filter(Boolean));
-        let best = {o:null, score:-1};
-        for (const o of optsList){
-          const ts = new Set(o.text.split(/\s+/).filter(Boolean));
-          const overlap = [...toks].filter(t=>ts.has(t)).length;
-          if (overlap > best.score) best = {o, score:overlap};
+  // cache per <li> to avoid re-walking
+  leverQuestionCache.set(li, txt);
+  return txt;
+}
+
+// =====================
+// Name extraction (UPDATED)
+// =====================
+function inputFieldSelection(field){
+  if(!field) return '';
+  if(fieldNameCache.has(field)) return fieldNameCache.get(field);
+
+  // local cleaner that also strips the field's own value/placeholder
+  const clean = (s)=>{
+    if(!s) return '';
+    let t = (s || '').trim();
+    if(field.value) t = t.replace(field.value, '').trim();
+    if(field.placeholder) t = t.replace(field.placeholder, '').trim();
+    t = stripRequiredAsterisk(t);
+    t = dropContainerNoise(t);
+    return normalizeFieldNameWithSpace(t);
+  };
+
+  const inFieldset = ()=>{
+    const fs = field.closest('fieldset');
+    if(!fs) return '';
+    const legend = fs.querySelector('legend');
+    if(legend?.textContent) return clean(legend.textContent);
+    const lab = fs.querySelector(':scope > label');
+    if(lab?.textContent) return clean(lab.textContent);
+    return '';
+  };
+
+  const labelAssoc = ()=>{
+    if (field.id){
+      const lab = document.querySelector(`label[for="${CSS.escape(field.id)}"]`);
+      if (lab?.textContent) return clean(lab.textContent);
+    }
+    let el = field;
+    while(el && el!==document.body){
+      if(el.tagName==='LABEL') return clean(el.textContent);
+      if(el.parentNode?.tagName==='LABEL') return clean(el.parentNode.textContent);
+      let prev = el.previousElementSibling;
+      while(prev){
+        if(prev.tagName==='LABEL') return clean(prev.textContent);
+        prev = prev.previousElementSibling;
+      }
+      el = el.parentNode;
+    }
+    return '';
+  };
+
+  const ariaLabels = ()=>{
+    if(field.hasAttribute('aria-label')) return clean(field.getAttribute('aria-label'));
+    if(field.hasAttribute('aria-labelledby')){
+      const ids = field.getAttribute('aria-labelledby').split(/\s+/);
+      const txt = ids.map(id => document.getElementById(id)?.textContent || '').join(' ');
+      if (txt.trim()) return clean(txt);
+    }
+    return '';
+  };
+
+  const inContainers = ()=>{
+    // Prefer Lever's explicit question text when available
+    if(isLeverHost){
+      const q = leverQuestionTextFor(field);
+      if(q) return clean(q);
+    }
+    let el = field;
+    while(el && el!==document.body){
+      const p = el.parentNode;
+      if(p && ['DIV','SECTION','SPAN','TD','TH','LI','P'].includes(p.tagName)){
+        const txt = dropContainerNoise((p.textContent||'').trim());
+        if(txt) return clean(txt);
+      }
+      let prev = el.previousElementSibling;
+      while(prev){
+        if(['DIV','SECTION','SPAN','TD','TH','LI','P'].includes(prev.tagName)){
+          const txt = dropContainerNoise((prev.textContent||'').trim());
+          if(txt) return clean(txt);
         }
-        hit = best.o;
+        prev = prev.previousElementSibling;
       }
-      if (hit){ hit.element.selected = true; }
+      el = el.parentNode;
     }
-    el.dispatchEvent(new Event('input', { bubbles: true, cancelable:true }));
-    el.dispatchEvent(new Event('change', { bubbles: true, cancelable:true }));
-    el.blur(); el.dispatchEvent(new Event('blur',{bubbles:true}));
-    if (opts.mapped) await waitForUiUpdates(3000);
-    return;
+    return '';
+  };
+
+  // ---------- resolution order ----------
+  let name = '';
+
+  // radios/checkboxes: fieldset or label are strongest
+  const t = (field.type||'').toLowerCase();
+  if (t === 'checkbox' || t === 'radio') {
+    name = inFieldset() || labelAssoc() || inContainers();
   }
 
-  // SINGLE <select>
-  if (tag === 'SELECT') {
-    if (complex) {
-      await trySearchingInDropdown(el, String(normVal));
-      if (opts.mapped) await waitForUiUpdates(3000);
-      return;
+  if(!name && isLeverHost){
+    // hard prefer the Lever question text early
+    const leverQ = leverQuestionTextFor(field);
+    if(leverQ) name = clean(leverQ);
+  }
+
+  if(!name) name = labelAssoc();
+  if(!name) name = ariaLabels();
+
+  // de-prioritize ugly machine names
+  if(!name && field.name && !looksMachineName(field.name)) {
+    name = clean(field.name);
+  }
+
+  if(!name && field.title) name = clean(field.title);
+  if(!name) name = inFieldset() || inContainers();
+  if(!name && field.placeholder) name = clean(field.placeholder);
+  if(!name) name = nearestTextAround(field);
+
+  // ---------- file input post-processing (uses your existing helpers/regexes) ----------
+  if(isFileField(field)){
+    const cleaned = stripFileCtas ? stripFileCtas(name) : name;
+    if (FILE_POS_KW_RE?.test?.(cleaned)) {
+      const finalName = normalizeFieldNameWithSpace(cleaned);
+      fieldNameCache.set(field, finalName);
+      return finalName;
     }
-    const nv = normalizeFieldNameWithSpace(String(normVal));
-    const options = Array.from(el.options).map(opt => ({
-      element: opt,
-      value: normalizeFieldNameWithSpace(opt.value || opt.textContent || '')
-    }));
-    const matched = options.find(opt => opt.value === nv) || options.find(opt => opt.value.includes(nv));
-    if (matched) {
-      matched.element.selected = true;
-      el.dispatchEvent(new Event('input', { bubbles: true, cancelable:true }));
-      el.dispatchEvent(new Event('change', { bubbles: true, cancelable:true }));
-      el.blur(); el.dispatchEvent(new Event('blur',{bubbles:true}));
-      if (opts.mapped) await waitForUiUpdates(3000);
-    } else {
-      log('Dropdown: no matching option found', normVal);
+    if (!cleaned || FILE_NEG_KW_RE?.test?.(cleaned) || FILE_SIZE_HINT_RE?.test?.(cleaned)) {
+      const hopName = findFileFieldName ? findFileFieldName(field, 6) : '';
+      if (hopName) {
+        fieldNameCache.set(field, hopName);
+        return hopName;
+      }
     }
-    return;
+    name = cleaned || name;
+    console.log('1. inputfieldselection func humanname for file:',name);
   }
 
-  // FILE
-  if(type==='file'){ return; }
-
-  // COMPLEX MULTI-SELECT
-  if (complex && isMultiSelectLike(el)) {
-    const values = splitMultiValues(normVal);
-    await selectMultipleFromDropdown(el, values);
-    if (opts.mapped) await waitForUiUpdates(3000);
-    return;
-  }
-
-  // COMPLEX SINGLE
-  if (complex){
-    await trySearchingInDropdown(el, String(normVal));
-    if (opts.mapped) await waitForUiUpdates(3000);
-    return;
-  }
-
-  // CONTENTEDITABLE
-  if(el.isContentEditable || el.getAttribute('role')==='textbox'){
-    el.focus();
-    try{
-      document.execCommand('selectAll',false,null);
-      document.execCommand('insertText', false, String(normVal));
-    }catch{
-      el.textContent = String(normVal);
-    }
-    fireInputEvents(el, normVal);
-    el.blur(); el.dispatchEvent(new Event('blur',{bubbles:true}));
-    if (opts.mapped) await waitForUiUpdates(2000);
-    return;
-  }
-
-  // STANDARD INPUT
-  el.focus();
-  setValueWithNativeSetter(el, String(normVal));
-  fireInputEvents(el, normVal);
-  el.blur(); el.dispatchEvent(new Event('blur',{bubbles:true}));
-
-  if (isWorkdaySite()) {
-    await delay(16);
-    const current = (el.value ?? '').toString();
-    if (normalizeFieldNameWithSpace(current) !== normalizeFieldNameWithSpace(String(normVal))) {
-      log('Workday: fallback typing characters');
-      await typeCharacters(el, String(normVal));
-      el.blur(); el.dispatchEvent(new Event('blur',{bubbles:true}));
-    }
-  }
-  if (opts.mapped) await waitForUiUpdates(2000);
+  const out = name || '';
+  fieldNameCache.set(field, out);
+  return out;
+}
+//===ashby helpers
+const isAshbyHost = /(?:^|\.)ashbyhq\.com$/i.test(location.hostname);
+const isGreenhouseHost = /(?:^|\.)greenhouse\.io$/i.test(location.hostname);
+function isAshbyButtonEntry(obj){
+  return !!(obj && obj.ashbyLinked && obj.optionText && obj.element?.tagName === 'BUTTON');
 }
 
-// ===== Address routing =====
-async function fillAddressFields(input, normalizedInputName, data, prefix){
-  const map = {
-    residence:{ address:'residenceaddress', city:'residencecity', state:'residencestate', zip_code:'residencezipcode', country:'residencecountry', location:'residencelocation' },
-    school:{ Name:'schoolname', address:'schooladdress', city:'schoolcity', state:'schoolstate', zip_code:'schoolzipcode', country:'schoolcountry', start_date:'schoolstartdate', end_date:'schoolenddate', currently_studying:'currentlystudying', location:'schoollocation' },
-    job:{ address:'jobaddress', city:'jobcity', state:'jobstate', zip_code:'jobzipcode', country:'jobcountry', start_date:'jobstartdate', end_date:'jobenddate', currently_working:'currentlyworking', duties:'jobduties', company_name:'companyname', job_name:'jobname', location:'joblocation' },
-  }[prefix];
-  if(!map) return;
-
-  const mappings = [
-    {k:[/city|town/], dk:map.city},
-    {k:[/zip|postal/], dk:map.zip_code},
-    {k:[/country|origin|region/], dk:map.country},
-    {k:[/state|province/], dk:map.state},
-    {k:[/address|street/], dk:map.address},
-    {k:[/start.*date/], dk:map.start_date, t:'date'},
-    {k:[/end.*date/], dk:map.end_date, t:'date'},
-    {k:[/name/], dk:map.Name},
-    {k:[/(current|present)/], dk:map.currently_studying, t:'checkbox'},
-    {k:[/(current|present)/], dk:map.currently_working, t:'checkbox'},
-    {k:[/company|employe/], dk:map.company_name},
-    {k:[/(job|role|name|title)/], dk:map.job_name},
-    {k:[/(duties|responsibilities|description)/], dk:map.duties},
-    {k:[/location/], dk:map.location}
-  ];
-
-  for(const m of mappings){
-    if(m.k.some(rx=>rx.test(normalizedInputName)) && data?.[m.dk]!=null){
-      log('Address fill', { field: normalizedInputName, dataKey: m.dk, prefix });
-      if(m.t==='date') await fillInput(input, formatDate(data[m.dk]), { mapped:true });
-      else await fillInput(input, data[m.dk], { mapped:true });
-      break;
-    }
-  }
+// --- helpers (Ashby only) ---
+function ashbyQuestionTextFor(node){
+  if (!isAshbyHost || !node) return '';
+  const entry = node.closest('[class*="application-form-field-entry"]') || node.closest('div');
+  const lab = entry?.querySelector('label[class*="application-form-question-title"], label[for]');
+  return (lab?.textContent || '').replace(/\s*[:*]\s*$/, '').trim();
 }
 
-// ===== Input collection (incl. combobox roles & iframes) =====
+function ashbyFindYesNoButtonsNear(input){
+  if (!isAshbyHost || !input) return [];
+  const entry = input.closest('[class*="application-form-field-entry"]') || input.closest('div');
+  if (!entry) return [];
+  // Ashby wraps the two buttons in a container with "yesno" in the class
+  const yesNo = entry.querySelector('div[class*="yesno"]');
+  if (!yesNo) return [];
+  const btns = [...yesNo.querySelectorAll('button')].filter(b => b && b.offsetParent !== null);
+  // keep only obvious yes/no
+  return btns
+    .map(b => ({ el: b, text: (b.textContent || '').trim().toLowerCase() }))
+    .filter(b => b.text === 'yes' || b.text === 'no');
+}
+
+// =====================
+// Input collection (incl. combobox roles & iframes)  — UPDATED
+// =====================
 function allShadowHosts(root=document){
   return [...root.querySelectorAll('*')].filter(el=>el.shadowRoot);
 }
-function collectInputsIn(root) {
+function collectInputsIn(root){
   const sel = `
     input:not([disabled]):not([readonly]):not([type="hidden"]),
     select:not([disabled]):not([readonly]),
     textarea:not([disabled]):not([readonly]),
     [contenteditable="true"]:not([aria-disabled="true"]),
     [role="textbox"]:not([aria-disabled="true"]),
-    [role="combobox"]:not([aria-disabled="true"]),
-    [aria-haspopup="listbox"]:not([aria-disabled="true"])
+    [role="combobox"]:not([aria-disabled="true"])
   `;
   const nodes = [...root.querySelectorAll(sel)];
+  const isToolbarish = (el) =>
+    el.closest('[role="toolbar"], [role="menu"], header, [data-testid*="toolbar"], [class*="toolbar"]');
+
   const results = [];
   let groupCounter = 0;
 
   for (const input of nodes) {
+    // Skip random buttons unless true combobox
+    if (input.tagName === 'BUTTON' && input.getAttribute('role') !== 'combobox') continue;
+    if (isToolbarish(input)) continue;
+
+    const style = window.getComputedStyle(input);
+    const inFloatingPanel =
+      !!input.closest('[role="listbox"], [role="dialog"], [role="menu"]') &&
+      (style.position === 'fixed' || style.position === 'absolute');
+    if (inFloatingPanel && input.tagName === 'INPUT' && input.type === 'text') continue;
+    //==icims 
+    if (isIcimsHost) {
+      // iCIMS dropdown search inputs live inside role=listbox but may not be fixed/absolute
+      if (input.closest('[role="listbox"], [role="dialog"], [role="menu"]')) {
+        // skip overlay search boxes; we’ll drive selects via anchor/search later
+        if (input.tagName === 'INPUT' && (input.type === 'text' || input.classList.contains('dropdown-search'))) {
+          continue;
+        }
+      }
+      // also skip known non-targets
+      if (input.matches('#nav-trigger, textarea[id^="h-captcha-response"]')) continue;
+    }
+    //
     let groupId = null;
     let humanName = null;
 
     const t = (input.type||'').toLowerCase();
     if (t === 'checkbox' || t === 'radio') {
+      // --- your existing grouping logic (unchanged) ---
+      let key = '';
+      if (input.name) key = `name:${input.name}`;
+      if (!key){
+        const fs = input.closest('fieldset');
+        const legend = fs?.querySelector('legend')?.textContent?.trim();
+        if (legend) key = `fieldset:${normalizeFieldNameWithSpace(legend)}`;
+      }
+      if (!key && input.getAttribute('aria-labelledby')){
+        key = `aria:${input.getAttribute('aria-labelledby')}`;
+      }
+      const container = input.closest('fieldset, section, div, form, ul, ol, table, tbody, tr') || root;
+      if (!key){
+        if (!groupCache.has(container)) groupCache.set(container, `group-${groupCounter++}`);
+        key = groupCache.get(container);
+      }
+      groupId = key;
+
+      if (!container._humanName) {
+        container._humanName = inputFieldSelection(input) || input.name || '';
+      }
+      humanName = container._humanName;
+
+      // --- NEW: only on Ashby, link nearby Yes/No buttons to this checkbox group ---
+      if (isAshbyHost && t === 'checkbox') {
+        const yesNoBtns = ashbyFindYesNoButtonsNear(input);
+        if (yesNoBtns.length) {
+          // Prefer the visible question text if present
+          const q = ashbyQuestionTextFor(input);
+          const human = q ? normalizeFieldNameWithSpace(q) : humanName;
+          for (const b of yesNoBtns) {
+            results.push({
+              element: b.el,           // use the button as the actionable element
+              groupId,
+              humanName: human,
+              ashbyLinked: true,       // optional hint for your filler
+              optionText: b.text       // "yes" or "no"
+            });
+          }
+        }
+      }
+      // --- end Ashby block ---
+
+    } else {
+      humanName = inputFieldSelection(input) || input.name || input.getAttribute?.('aria-label') || '';
+    }
+
+    const obj = { element: input, groupId, humanName };
+    if (typeof refineDateHumanNameAndGroup === 'function' && isWorkdayHost){
+      refineDateHumanNameAndGroup(obj);
+    }
+    results.push(obj);
+  }
+  // after the for-loop, before returning:
+  results.sort((a,b) => {
+    if (a.groupId && a.groupId === b.groupId) {
+      const aIsBtn = a.element?.tagName === 'BUTTON';
+      const bIsBtn = b.element?.tagName === 'BUTTON';
+      if (aIsBtn !== bIsBtn) return aIsBtn ? 1 : -1; // INPUTs first
+    }
+    return 0;
+  });
+  console.log('All Results with input,label and id:', results.slice(0,70));
+  return results;
+}
+
+/*
+function collectInputsIn(root){
+  const sel = `
+    input:not([disabled]):not([readonly]):not([type="hidden"]),
+    select:not([disabled]):not([readonly]),
+    textarea:not([disabled]):not([readonly]),
+    [contenteditable="true"]:not([aria-disabled="true"]),
+    [role="textbox"]:not([aria-disabled="true"]),
+    [role="combobox"]:not([aria-disabled="true"])
+  `;
+  const nodes = [...root.querySelectorAll(sel)];
+  //const specialNodes = root.querySelectorAll('button:not([disabled]):not([aria-disabled="true"])'); // Renamed to specialNodes for clarity
+  /*
+  // CORRECTED Logic
+  if (isAshbyHost && specialNodes.length > 0) {
+    nodes.push(...specialNodes); // Use spread syntax to add individual elements
+  }
+
+  const isToolbarish = (el) =>
+    el.closest('[role="toolbar"], [role="menu"], header, [data-testid*="toolbar"], [class*="toolbar"]');
+
+  const results = [];
+  let groupCounter = 0;
+
+  for (const input of nodes) {
+    // Skip random buttons unless true combobox
+    if (input.tagName === 'BUTTON' && input.getAttribute('role') !== 'combobox') continue;
+  
+
+    // Skip disabled-ish toolbars/headers
+    if (isToolbarish(input)) continue;
+
+    // Skip floating listbox search boxes (popper overlays)
+    const style = window.getComputedStyle(input);
+    const inFloatingPanel =
+      !!input.closest('[role="listbox"], [role="dialog"], [role="menu"]') &&
+      (style.position === 'fixed' || style.position === 'absolute');
+    if (inFloatingPanel && input.tagName === 'INPUT' && input.type === 'text') continue;
+
+    let groupId = null;
+    let humanName = null;
+
+    const t = (input.type||'').toLowerCase();
+    if (t === 'checkbox' || t === 'radio') {
+      // make a stable key for radio/checkbox sets
       let key = '';
       if (input.name) key = `name:${input.name}`;
       if (!key){
@@ -1110,10 +2113,20 @@ function collectInputsIn(root) {
       humanName = inputFieldSelection(input) || input.name || input.getAttribute?.('aria-label') || '';
     }
 
-    results.push({ element: input, groupId, humanName });
+    const obj = { element: input, groupId, humanName };
+
+    // keep your Workday date refinements
+    if (typeof refineDateHumanNameAndGroup === 'function' && isWorkdayHost){
+      refineDateHumanNameAndGroup(obj);
+    }
+
+    results.push(obj);
   }
+
+  console.log('All Results with input,label and id:', results.slice(0,30));
   return results;
 }
+*/
 function collectAllRoots(){
   const roots = [document];
   const stack = [...allShadowHosts(document)];
@@ -1134,7 +2147,8 @@ function collectAllRoots(){
   }
   return roots;
 }
-function inputSelection() {
+/*
+function inputSelection(){
   const roots = collectAllRoots();
   const all = roots.flatMap(r => collectInputsIn(r));
   const uniq = [];
@@ -1145,473 +2159,1183 @@ function inputSelection() {
       uniq.push(it);
     }
   }
-  log('Total inputs collected', uniq.length);
+  console.log('Total inputs collected', uniq.length, uniq.slice(0,70));
+  return uniq;
+}
+*/
+function shouldSkipTopInputScan() {
+  if (window.top !== window) return false; // we are inside an iframe already
+  const frames = document.querySelectorAll('iframe, frame');
+  for (const f of frames) {
+    try {
+      const src = f.src || '';
+      if (/(workday\.com|icims\.com|lever\.co|greenhouse\.io|smartrecruiters\.com|taleo\.net|oraclecloud\.com|bamboohr\.com)/i.test(src)) {
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+function inputSelection(){
+  // 🚫 Skip scanning if we’re the top window and ATS iframe exists
+  if (shouldSkipTopInputScan()) {
+    console.log('[inputSelection] ATS iframe detected — skip input scanning in top window');
+    return [];
+  }
+  const roots = isIcimsHost ? [getIcimsFormRoot()] : collectAllRoots();
+  const all = roots.flatMap(r => collectInputsIn(r));
+
+  const uniq = [];
+  const seenEls = new WeakSet();
+  const seenKeys = new Set();
+
+  for (const it of all) {
+    const el = it.element;
+    if (!el) continue;
+    if (seenEls.has(el)) continue;
+    seenEls.add(el);
+
+    const key = stableKeyFor(el);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    uniq.push(it);
+  }
+
+  console.log('Total inputs collected', uniq.length, uniq.slice(0,70));
   return uniq;
 }
 
-// ===== Check helpers =====
-async function checkElement(el, shouldCheck = true){
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  await delay(30);
-  if (!!el.checked !== !!shouldCheck) {
-    el.click();
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-  el.setAttribute('data-autofilled', 'true');
-  el.classList.add('autofill-highlight');
-  setTimeout(() => el.classList.remove('autofill-highlight'), 240);
-}
+// =====================
+// Repeated section discovery (Add buttons, titles)
+//EDUCATION =====
+export const eduMappings = [
+  { keywords:[/\b(school|college|university)\s*(?:name)?\b/i],     dataKey:'educations[x].school' },
+  { keywords:[/\bdegree\b/i],                                       dataKey:'educations[x].degree' },
+  { keywords:[/\b(major|field\s*of\s*study|discipline|course|course\s*of\s*study)\b/i], dataKey:'educations[x].major' },
+  { keywords:[/\b(cgpa|gpa)\b/i],                                   dataKey:'educations[x].cgpa' },
+  { keywords:[/\bcurrently\s*studying|present\b/i],                 dataKey:'educations[x].currently_studying' },
+];
 
-// ===== Workday gating =====
-function classifyForWorkday(inputName) {
-  const n = (inputName || '').toLowerCase();
-  if (/\bcountry\b/.test(n)) return 'country';
-  if (/\b(phone|mobile)\b/.test(n)) return 'phone';
-  if (/\b(address|zip|postal|state|province|city|town)\b/.test(n)) return 'address';
-  if (/\b(name|first|last|middle)\b/.test(n)) return 'name';
-  return 'other';
-}
-function elementHasNonEmptyValue(el){
-  const t = (el.type||'').toLowerCase();
-  if (t==='checkbox' || t==='radio') return el.checked;
-  if (el.tagName?.toUpperCase()==='SELECT'){
-    const i = el.selectedIndex;
-    if (i == null || i < 0) return false;
-    const opt = el.options[i];
-    const txt = (opt?.textContent || opt?.value || '').trim();
-    return !!txt;
+// ===== EXPERIENCE =====
+export const expMappings = [
+  { keywords:[/\b(company|employer|organization)\s*(?:name)?\b/i], dataKey:'experiences[x].company_name' },
+  { keywords:[/\b(job|role|position)\b(?!(\s*description))\s*(?:(title|name))?\b/i],     dataKey:'experiences[x].job_name' },
+  { keywords:[/\bcurrently\s*(work|working)|present\b/i],                 dataKey:'experiences[x].currently_working' },
+  { keywords:[/\b(duties|responsibilities|description)\b/i],       dataKey:'experiences[x].job_duties' },
+];
+
+// ===== SHARED ADDRESS (dynamic prefix for repeated sections) =====
+export const addressMappings = [
+  { keywords:[/\b(start\s*date|from|start)\b/i],                    dataKey:'{prefix}[x].start_date', type:'date' },
+  { keywords:[/\bend\s*date|graduation\s*date|to|end\b/i],          dataKey:'{prefix}[x].end_date',   type:'date' },
+  { keywords:[/(?:(?<!e[-\s]?mail\s*)\b(?:(?:employer|working)\s*)?address\b(?!\s*line\s*2\b)(?:\s*(?:line\s*1|number(?:\s*\d+)?))?|\bstreet\s*number\b)/i], dataKey:'{prefix}[x].address' },
+  { keywords:[/\b(?:(?:employer|working|school|university|job|company)\s*)?(city|town)\b/i], dataKey:'{prefix}[x].city' },
+  { keywords:[/\b(?:(?:employer|working|school|university|job|company)\s*)?state\b(?!\s*of\b)/i], dataKey:'{prefix}[x].state' },
+  { keywords:[/\b(?:(?:employer|working|school|university|job|company)\s*)?zip(?:\s*code)?\b/i], dataKey:'{prefix}[x].zip_code' },
+  { keywords:[/\b(?:(?:employer|working|school|university|job|company)\s*)?country\b(?!\s*(?:code|dial|calling)\b)/i], dataKey:'{prefix}[x].country' },
+  { keywords:[/\b(?:(?:employer|working|school|university|job|company)\s*)?location\b/i],dataKey:'{prefix}[x].location', type:'combine'},
+];
+
+export const resMappings = [
+    // ==== CONTACT ADDRESS (root/residence) ====
+  { keywords: [/(?:(?<!e[-\s]?mail\s*)\b(?:(?:residence|residential|street|postal|permanent|home)\s*)?address\b(?!\s*line\s*2\b)(?:\s*(?:line\s*1|number(?:\s*\d+)?))?|\bstreet\s*number\b)/i], dataKey: 'residenceaddress' },
+  { keywords: [/\b(?:(?:residence|residential|permanent|present|curren|home)\s*)?(?:city|town)\b/i], dataKey: 'residencecity' },
+  { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)?state\b(?!\s*of\b)/i], dataKey: 'residencestate' },
+  { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)?country\b(?!\s*(?:code|dial|calling)\b)/i], dataKey: 'residencecountry' },
+  { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)(?:zip|postal|area)\s*code\b/i], dataKey: 'residencezipcode'},
+  { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)?(?:location)\b/i], dataKey: 'residencelocation' }
+]
+const TITLE_BUCKETS = {
+  education: ['education','school','college','university','degree','qualification'],
+  experience: ['experience','employment','work history','job history','work experience'],
+  languages: ['language','languages'],
+  certifications: ['certification','certifications','license','licenses','credential','credentials'],
+};
+const SECTION_TO_DATAKEY = {
+  education: 'educations',
+  experience: 'experiences',
+  languages: 'languages',
+  certifications: 'certifications',
+};
+function normalize(s){ return normalizeFieldNameWithSpace(s||''); }
+const HEADING_SEL = 'h1,h2,h3,h4,h5,h6,[role="heading"],legend';
+const TITLE_HINT_SEL = [
+  'label','strong','span',
+  '[data-automation-id*="Heading"]',
+  '[data-automation-id*="Title"]',
+  '[data-automation-id*="header"]',
+  '[data-automation-id*="title"]'
+].join(',');
+//to find forms near fields.
+const CONTAINER_UP_SEL = 'section,fieldset,form,article,div';
+//function to return the text of an element
+function textOf(el){ return (el?.textContent || '').trim(); }
+function firstMatch(scope, sel){ try { return scope?.querySelector?.(sel) || null; } catch { return null; } }
+function textFromAria(el, doc = document){
+  if (!el) return '';
+  const label = el.getAttribute('aria-label');
+  if (label) return label.trim();
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy){
+    const ids = labelledBy.split(/\s+/).filter(Boolean);
+    const txt = ids.map(id => doc.getElementById(id)?.textContent || '').join(' ').trim();
+    if (txt) return txt;
   }
-  if (el.isContentEditable) return ((el.textContent||'').trim().length > 0);
-  const v = el.value ?? '';
-  return (String(v).trim().length > 0);
+  return '';
 }
-function workdayCountryIsReady(inputs){
-  for (const obj of inputs){
-    if (/\bcountry\b/i.test(obj.humanName || '')){
-      if (elementHasNonEmptyValue(obj.element)) return true;
+function resolveSectionTitleForAdd(btn, { maxHops = 6 } = {}){
+  if (!btn) return '';
+  let node = btn.closest(CONTAINER_UP_SEL);
+  const doc = btn.ownerDocument || document;
+  let hops = 0;
+
+  while (node && hops < maxHops){
+    const legend = node.matches('fieldset') ? firstMatch(node, 'legend') : null;
+    if (legend && textOf(legend)) return textOf(legend);
+    const heading = firstMatch(node, HEADING_SEL);
+    if (heading && textOf(heading)) return textOf(heading);
+    const ariaTxt = textFromAria(node, doc);
+    if (ariaTxt) return ariaTxt;
+    const wdHint = firstMatch(node, TITLE_HINT_SEL);
+    if (wdHint && textOf(wdHint)) return textOf(wdHint);
+
+    let prev = node.previousElementSibling;
+    while (prev){
+      const prevHeading = prev.matches(HEADING_SEL) ? prev : firstMatch(prev, HEADING_SEL);
+      if (prevHeading && textOf(prevHeading)) return textOf(prevHeading);
+      const prevLabelish = firstMatch(prev, TITLE_HINT_SEL);
+      if (prevLabelish && textOf(prevLabelish)) return textOf(prevLabelish);
+      const prevAria = textFromAria(prev, doc);
+      if (prevAria) return prevAria;
+      prev = prev.previousElementSibling;
     }
+    node = node.parentElement?.closest?.(CONTAINER_UP_SEL) || node.parentElement;
+    hops++;
   }
-  return true;
+  return nearestTextAround(btn, 300) || '';
 }
 
-// ===== Repeated Sections (Education / Experience / Languages) =====
-const RX_EDU = /(education|school|university|college)/i;
-const RX_EXP = /(experience|employment|work|job)/i;
-const RX_LANG = /(language|languages)/i;
+//finding add button with nearest titles.
+function findAddButtonsWithTitles(root = document) {
+  const CLICKABLE = [
+    'button',
+    '[role="button"]',
+    'a[href]',
+    '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
 
-function textOf(el){ return (el?.textContent || el?.innerText || '').trim(); }
-function qAll(root, sel){ return Array.from((root || document).querySelectorAll(sel)); }
+  const ADD_TEXT_RE = /\b(add|new|\+)\b/i;
 
-function findSectionHeaders(sectionRx) {
-  const heads = qAll(document, 'h1,h2,h3,h4,legend,.section-title,.title,[data-automation-id]');
-  return heads.filter(h => sectionRx.test(textOf(h)) || sectionRx.test(h.getAttribute('data-automation-id')||''));
+  const candidates = [...root.querySelectorAll(CLICKABLE)].filter(el =>  ADD_TEXT_RE.test(el.textContent || el.getAttribute('aria-label') || '')); //isElementVisible(el) &&
+  console.log('buttons found',candidates);
+  return candidates.map(btn => {
+    const titleText = resolveSectionTitleForAdd(btn, { maxHops: 6 }) || '';
+    const controlsId = btn.getAttribute('aria-controls');
+    const controlled = controlsId ? btn.ownerDocument.getElementById(controlsId) : null;
+    const norm = normalize(titleText);
+    console.log('findaddbuttonswithtitles,:',btn,norm,controlled);
+    return { button: btn, rawTitle: titleText, normTitle: norm, controlled };
+  });
 }
-function findNearestSectionRoot(headerEl){
-  return headerEl.closest('section,form,fieldset,div') || headerEl.parentElement || document.body;
-}
-function findNearestAddButtonToHeader(headerEl) {
-  const ADD_RX = /^(\+?\s*)?add(\s|$)/i;
-  const scope = findNearestSectionRoot(headerEl);
-  const candidates = [
-    ...qAll(scope, 'button,[role="button"],a,span[role="button"],div[role="button"]'),
-    ...qAll(scope, '[data-automation-id*="add"],[data-automation-id*="Add"],[title^="Add"]')
-  ].filter(isVisible);
-
-  for (const b of candidates){
-    const text = textOf(b);
-    const aria = (b.getAttribute('aria-label')||'') + ' ' + (b.getAttribute('title')||'') + ' ' + (b.getAttribute('data-automation-id')||'');
-    if (ADD_RX.test(text) || ADD_RX.test(aria) || /add/i.test(aria)) return b;
+//function to return add button section title is  edu/exp or none.
+function titleToSectionKey(normTitle) {
+  if (!normTitle) return null;
+  for (const [key, keywords] of Object.entries(TITLE_BUCKETS)) {
+    if (keywords.some(k => normTitle.includes(k))) return key;
   }
   return null;
 }
-function countEntryBlocksInSection(sectionRoot){
-  // heuristic: count containers with at least 2 interactive fields but smaller than entire section
-  const groups = qAll(sectionRoot, 'fieldset, .card, .panel, .wd-Panel, .MuiPaper-root, .ant-card, li, div');
-  const blocks = [];
-  for (const g of groups) {
-    const inputs = g.querySelectorAll('input:not([type="hidden"]), select, textarea, [contenteditable="true"], [role="textbox"]');
-    if (inputs.length >= 2) {
-      const secInputs = sectionRoot.querySelectorAll('input:not([type="hidden"]), select, textarea, [contenteditable="true"], [role="textbox"]').length;
-      if (inputs.length < secInputs) blocks.push(g);
+async function safeClick(el) {
+  if (!el) return false; // || !isElementVisible(el)
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  await new Promise(r => setTimeout(r, 120));
+  el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  el.click?.();
+  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  el.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+  return true;
+}
+async function waitAfterExpand() {
+  await waitForDomStable({ timeoutMs: 3000, quietMs: 180 });
+  await new Promise(r => setTimeout(r, 60));
+}
+//function to return the opened inputs
+function resolveNewContainer(candidate) {
+  const modal = document.querySelector('[role="dialog"][aria-modal="true"], [data-automation-id*="promptPanel"], [data-automation-id*="modalDialog"]');
+  if (modal && isElementVisible(modal)) return modal;
+  if (candidate?.controlled && isElementVisible(candidate.controlled)) return candidate.controlled;
+  return widenToInputCluster(candidate?.button || document.body);
+}
+//Returns new form fields.
+function widenToInputCluster(anchor) {
+  const containers = [
+    anchor?.closest?.('section,fieldset,form,div,article'),
+    document
+  ].filter(Boolean);
+
+  let best = containers[0] || document;
+  let bestScore = -1;
+
+  for (const c of containers) {
+    const visibleInputs = [...c.querySelectorAll('input,select,textarea,[contenteditable="true"]')]
+      .filter(isElementVisible).length;
+    if (visibleInputs > bestScore) {
+      bestScore = visibleInputs;
+      best = c;
     }
   }
-  // dedupe by geometry
-  const uniq = [];
-  const seen = new Set();
-  for (const b of blocks) {
-    const r = b.getBoundingClientRect();
-    const key = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)].join(':');
-    if (!seen.has(key)) { seen.add(key); uniq.push(b); }
+  //console.log('wideninputcluster best contiane for add button:',best);
+  return best;
+}
+async function fillOneEducation(container, dataItem) {
+  const inputs = collectInputsIn(container);
+  //await populateRepeatedSection(container, 'education', dataItem);
+  //console.log('Inputs for education:', container, dataItem);
+  await populateFields(inputs, dataItem);
+}
+async function fillOneExperience(container, dataItem) {
+  const inputs = collectInputsIn(container);
+  await populateFields(inputs,dataItem)
+  //await populateRepeatedSection(container, 'experience', dataItem);
+ // console.log('Inputs for experience:', container, dataItem);
+  // await populateExperienceGroup(inputs, dataItem);
+}
+async function fillOneLanguage(container, dataItem) {
+  const inputs = collectInputsIn(container);
+  //await populateFields(inputs,dataItem)
+  //console.log('Inputs for language:', inputs, dataItem);
+}
+async function fillOneCertification(container, dataItem) {
+  //const inputs = collectInputsIn(container);
+ // console.log('Inputs for certification:', inputs, dataItem);
+}
+async function fillOneBySection(sectionKey, container, dataItem) {
+  if (sectionKey === 'education') return fillOneEducation(container, dataItem);
+  if (sectionKey === 'experience') return fillOneExperience(container, dataItem);
+  if (sectionKey === 'languages') return fillOneLanguage(container, dataItem);
+  if (sectionKey === 'certifications') return fillOneCertification(container, dataItem);
+}
+// NEW: Repeated-section mapping/locking helpers
+//Function to return any edu/exp forms nearest matched
+const CONTAINER_UP_SEL2 = 'section,fieldset,form,article';
+/*function resolveNearestSectionRoot(el, maxHops=6){
+  let cur = el;
+  for (let i=0;i<maxHops && cur;i++){
+    if (cur.matches?.(CONTAINER_UP_SEL2)) return cur;
+    cur = cur.parentElement;
   }
-  return uniq.length;
-}
-async function ensureSectionEntries(sectionRx, neededCount, maxClicks=6){
-  const headers = findSectionHeaders(sectionRx);
-  if (!headers.length) return 0;
-  // pick the header whose section has the most inputs
-  headers.sort((a,b)=>{
-    const sa = findNearestSectionRoot(a);
-    const sb = findNearestSectionRoot(b);
-    return (sb.querySelectorAll('input,select,textarea,[contenteditable="true"]').length -
-            sa.querySelectorAll('input,select,textarea,[contenteditable="true"]').length);
-  });
-  const header = headers[0];
-  const section = findNearestSectionRoot(header);
-  let count = countEntryBlocksInSection(section);
-  log('ensureSectionEntries start', { neededCount, count, headerText: textOf(header) });
-
-  let clicks = 0;
-  while (count < neededCount && clicks < maxClicks){
-    const btn = findNearestAddButtonToHeader(header);
-    if (!btn) { log('Add button not found for section'); break; }
-    btn.scrollIntoView({behavior:'smooth', block:'center'});
-    btn.click();
-    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
-    clicks++;
-    await waitForUiUpdates(4000, 300);
-    count = countEntryBlocksInSection(section);
-    log('ensureSectionEntries click result', { clicks, count });
+  return el.closest(CONTAINER_UP_SEL2) || el.closest('form') || document.body;
+} */
+//finding a label for form/fieldset
+/*
+function scrapeTitleFor(node){
+  const legend = node.matches('fieldset') ? node.querySelector('legend') : null;
+  if (legend?.textContent) return legend.textContent.trim();
+  const heading = node.querySelector(HEADING_SEL);
+  if (heading?.textContent) return heading.textContent.trim();
+  const aria = node.getAttribute?.('aria-label') || '';
+  if (aria) return aria.trim();
+  const labelledBy = node.getAttribute?.('aria-labelledby');
+  if (labelledBy){
+    const txt = labelledBy.split(/\s+/).map(id=>node.ownerDocument.getElementById(id)?.textContent||'').join(' ').trim();
+    if (txt) return txt;
   }
-  return count;
+  let prev = node.previousElementSibling;
+  while (prev){
+    const h = prev.matches(HEADING_SEL) ? prev : prev.querySelector?.(HEADING_SEL);
+    if (h?.textContent) return h.textContent.trim();
+    prev = prev.previousElementSibling;
+  }
+  return '';
+} */
+//function returning which kind the form belongs to 
+function classifySectionForInput(input){
+  //const root = resolveNearestSectionRoot(input);
+  //const raw = scrapeTitleFor(root);
+  const root = document.body;
+  const raw = resolveSectionTitleForAdd(input,{maxHops:6}) || '';
+  const norm = normalizeFieldNameWithSpace(raw);
+  for (const [key, list] of Object.entries(TITLE_BUCKETS)){
+    if (list.some(k => norm.includes(k))) {
+      return { kind:key, root };
+    }
+
+  }
+  return { kind:null, root };
 }
 
-// ===== Resume Autofill UX detector (for 3s second pass) =====
-function hasResumeAutofillUX(){
-  const nodes = Array.from(document.querySelectorAll('h1,h2,h3,label,button,span,div,a'));
-  const joined = nodes.slice(0, 400).map(n => (n.textContent||'').toLowerCase()).join(' ');
-  if (/(autofill|parse|from resume|extract).*resume|resume.*(autofill|parse|extract)/i.test(joined)) return true;
-  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
-  return fileInputs.some(inp => {
-    const name = bestLabelForFileInput(inp) || inputFieldSelection(inp);
-    return /resume|cv/.test(name || '');
-  });
+// anchors + blind spots
+const EDU_ANCHORS = [/\bdegree\b/i, /\b(school|college|university)\b/i, /\b(discipline|major|field\s*of\s*study)\b/i];
+const EXP_ANCHORS = [/\b(company|employer|organization)\b/i, /\b(job|role|position)\s*(?:(title|name))?\b/i];
+const ADDRESSISH = [
+  /\baddress\b(?!\s*line\s*2\b)/i, /\bcity\b/i, /\bstate\b(?!\s*of\b)/i, /\bzip(?:\s*code)?\b/i,
+  /\bcountry\b(?!\s*(?:code|dial|calling)\b)/i
+];
+//checking the input labels with edu anchors to make sure ot belongs to correct kind
+function isAnchorLabel(label, kind){
+  const rxs = kind==='education' ? EDU_ANCHORS : kind==='experience' ? EXP_ANCHORS : [];
+  return rxs.some(rx=>rx.test(label));
+}
+//checking belongs to address labels
+function isAddressish(label){ return ADDRESSISH.some(rx=>rx.test(label)); }
+// per-section states
+const sectionState = new WeakMap(); // root -> { kind, locked, index,perIndexFilled: Map<number, Set<string>>}
+const usedIndex = { education:new Set(), experience:new Set() };
+//map Function storing the kind,index and filledkeys.
+function ensureSectionState(root, kind){
+  if (!sectionState.has(root)) {
+    sectionState.set(root, { kind, locked:false, index:null, perIndexFilled:new Map() });
+  }
+  const st = sectionState.get(root);
+  if (!st.kind && kind) st.kind = kind;
+  return st;
+}
+//to return unused first index in arrays
+function nextUnusedIndex(kind, data){
+  const arr = (kind==='education') ? (data.educations||[]) : (data.experiences||[]);
+  const used = usedIndex[kind];
+  for (let i=0;i<arr.length;i++){
+    if (!used.has(i)) return i;
+  }
+  return null;
+}
+// Consumption ledger: kind -> Map<index, Set<relKey>>
+const consumed = {
+  education: new Map(),
+  experience: new Map()
+};
+
+function isConsumed(kind, index, relKey){
+  const m = consumed[kind];
+  const s = m.get(index);
+  return !!s && s.has(relKey);
+}
+function markConsumed(kind, index, relKey){
+  const m = consumed[kind];
+  if (!m.has(index)) m.set(index, new Set());
+  m.get(index).add(relKey);
 }
 
-// ====== Populate all ======
+// Get next unused index >= startIdx
+function nextUnusedIndexFrom(kind, data, startIdx=0){
+  const arr = (kind==='education') ? (data.educations||[]) : (data.experiences||[]);
+  const used = usedIndex[kind];
+  for (let i = startIdx; i < arr.length; i++){
+    if (!used.has(i)) return i;
+  }
+  //return null;
+  return null;
+}
+
+//to lock which index need to parse for sections.
+function lockIndexForSection(st, kind,data){
+  const arr = kind==='education' ? (data.educations||[]) : (data.experiences||[]);
+  let bestIdx = null//, bestScore = -1;
+  for (let i = 0; i < arr.length; i++) {
+    // Check if the current index 'i' is NOT in the set of used indices for this 'kind'.
+    if (!usedIndex[kind].has(i)) {
+      bestIdx = i; // This is the first unused index we found.
+      break;       // Stop the loop immediately.
+    }
+  }
+  const fallback = nextUnusedIndex(kind, data);
+  st.index = (bestIdx !== null ? bestIdx : fallback ?? 0);
+  // Mark the state as locked and add the chosen index to the used set.
+  st.locked = true;
+  usedIndex[kind].add(st.index);
+}
+// Keep these WeakMaps near your other per-root state
+const kindStreakByRoot = new WeakMap(); // root -> { last:'education'|'experience'|null, count:number }
+
+function bumpKindStreak(root, newKind){
+  if (!newKind) return { last:null, count:0 };
+  let s = kindStreakByRoot.get(root);
+  if (!s) s = { last:null, count:0 };
+  if (s.last === newKind) s.count++;
+  else { s.last = newKind; s.count = 1; }
+  kindStreakByRoot.set(root, s);
+  return s;
+}
+
+
+//Updating dynamically section key and index
+function resolveDataKey(template, kind, index){
+  return template
+    .replace('{prefix}', kind==='education' ? 'educations' : 'experiences')
+    .replace('[x]', `.${index}`)
+    .replace('educations[x]', `educations.${index}`)
+    .replace('experiences[x]', `experiences.${index}`);
+}
+//functio ot return path
+function getByPath(obj, path){
+  if (!path) return undefined;
+  const parts = path.split('.').map(p => /^\d+$/.test(p) ? Number(p) : p);
+  return parts.reduce((a,k)=>a?.[k], obj);
+}
+
+// decide mapping for a single input
+function flattenRegexes(mappings) {
+  return mappings.flatMap(m => Array.isArray(m.keywords) ? m.keywords : []).filter(Boolean);
+}
+function labelFor(el){ try { return inputFieldSelection(el); } catch { return ''; } }
+
+//Main function for decideing wether it is repeated or non repeated.
+function decideMappingForInput(input, inputLabel, data, { 
+  fieldMappings, eduMappings, expMappings, addressMappings
+}){
+  const base = fieldMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+  if (base) return { mapping: base, dataKey: base.dataKey, reason: 'base' };
+
+  // NOTE: assuming resMappings exists in your scope (as in your code)
+  const res = resMappings.find(m=>m.keywords?.some(rx=>rx.test(inputLabel)));
+
+  const eduHit  = eduMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+  const expHit  = expMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+  const addrHit = addressMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+
+  const { kind, root } = classifySectionForInput(input);
+  console.log('decide functon,inputlabel, root and  kind received for input',inputLabel,root,kind);
+
+  let inferredKind = kind;
+  console.log('decide function, 1st inferredkind',inferredKind);
+  if (!inferredKind) inferredKind = eduHit ? 'education' : expHit ? 'experience' : null;
+
+  let st = ensureSectionState(root, inferredKind);
+  console.log('decide functon, section map',st);
+
+  if(res && !st.locked && !inferredKind){
+    console.log('st.locked status:',st.locked);
+    return {mapping: res, dataKey:res.dataKey,reason:'res' };
+  }
+
+  if (!eduHit && !expHit && !addrHit) return null;
+
+  if(!inferredKind && st.locked){
+    inferredKind = st.kind;
+    console.log('decide function,setting kind to use for address labels using st.locked',inferredKind);
+  }
+
+  // === UPDATED ①: allow switching the locked kind if current input points to the other kind ===
+  // Determine what this input most strongly suggests right now:
+  const presentKind = eduHit ? 'education' : (expHit ? 'experience' : inferredKind);
+  if (st.locked && presentKind && presentKind !== st.kind) {
+    console.log('decide function: switching locked kind from', st.kind, 'to', presentKind);
+    st.locked = false;         // drop the old lock
+    st.index  = null;          // clear index
+    st.kind   = presentKind;   // adopt the new kind
+  }
+  // === END UPDATED ① ===
+
+  if (presentKind && !st.locked && isAddressish(inputLabel)){
+    console.log('decide skipping because address before lock');
+    return { skip:true, reason:'address_before_lock' };
+  }
+
+  if (presentKind && !st.locked && isAnchorLabel(inputLabel, presentKind)){
+    lockIndexForSection(st, presentKind, data);
+    console.log('decide function,sending new index locked:');
+  }
+
+  const hit = eduHit || expHit || addrHit;
+  const kindToUse = eduHit ? 'education' : expHit ? 'experience' : presentKind;
+  console.log('decide finla kind to use:',kindToUse);
+  if (!kindToUse) return null;
+
+  // === UPDATED ②: respect lock only if it matches the kind we’re about to use ===
+  const lockMatchesKind = st.locked && (st.kind === kindToUse);
+  let idx = lockMatchesKind ? st.index : (kindToUse ? (nextUnusedIndex(kindToUse, data) ?? 0) : 0);
+  if (!lockMatchesKind && !st.locked) {
+    // Soft-lock now so subsequent section fields align
+    lockIndexForSection(st, kindToUse, data);
+    idx = st.index;
+  }
+  // === END UPDATED ② ===
+
+  console.log('decide index:',idx);
+
+  // updating dynamic key with correct kind and index
+  let tentativeKey = resolveDataKey(hit.dataKey, kindToUse, idx);
+  console.log('decide tenativeKey',tentativeKey);
+
+  // replacing all the dynamic keys with tentative key index related
+  let relKey = toRelativeKey(tentativeKey, kindToUse);
+  console.log('decide relKey',relKey);
+
+  // If this relKey for the current index was already consumed, advance index
+  while (st.locked && isConsumed(kindToUse, idx, relKey)) {
+    const nextIdx = nextUnusedIndexFrom(kindToUse, data, idx + 1);
+    if (nextIdx == null) return null; // nothing left to fill
+    idx = nextIdx;
+    console.log('decided nextidx due to used idx and datakey',idx);
+    tentativeKey = resolveDataKey(hit.dataKey, kindToUse, idx);
+    console.log('decided non conusmed tentativekey',idx);
+    relKey = toRelativeKey(tentativeKey, kindToUse);
+    console.log('decided non conusmed relkey',idx);
+    // also promote lock to the new index so subsequent fields align
+    st.index = idx;
+    console.log('updating st.index because of used index old',st.index);
+    usedIndex[kindToUse].add(idx);
+    console.log('decide, if repeated,idx,tentativeKey,relKey:',idx,tentativeKey,relKey);
+  }
+
+  console.log('decide ,finally mapping',hit,'dataKey',tentativeKey,'kind',kindToUse,'index',idx);
+
+  // (Optional improvement you can adopt later: mark with relKey to match the checker)
+  markConsumed(kindToUse, idx, tentativeKey);
+
+  return { mapping: hit, dataKey: tentativeKey, kind: kindToUse, index: idx, reason: 'repeated' };
+}
+
+/*
+function decideMappingForInput(input, inputLabel, data, {
+  fieldMappings, eduMappings, expMappings, addressMappings
+}){
+  const base = fieldMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+  if (base) return { mapping: base, dataKey: base.dataKey, reason: 'base' };
+  //return the section label for input ele.
+  const res = resMappings.find(m=>m.keywords?.some(rx=>rx.test(inputLabel)));
+  const eduHit  = eduMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+  const expHit  = expMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+  const addrHit = addressMappings.find(m => m.keywords?.some(rx=>rx.test(inputLabel)));
+  const { kind, root } = classifySectionForInput(input);
+  console.log('decide functon,inputlabel and  kind received for input',inputLabel,kind);
+  let inferredKind = kind;
+  console.log('decide function, 1st inferredkind',inferredKind);
+  if (!inferredKind) inferredKind = eduHit ? 'education' : expHit ? 'experience' : null;
+  let st = ensureSectionState(root, inferredKind);
+  console.log('decide functon, section map',st);
+  if(res && !st.locked && !inferredKind){
+    console.log('st.locked status:',st.locked);
+    return {mapping: res, dataKey:res.dataKey,reason:'res' };
+  }
+  if (!eduHit && !expHit && !addrHit) return null;
+  if(!inferredKind && st.locked){ inferredKind = st.kind; console.log('decide function,setting kind to use for address labels using st.locked',inferredKind);}
+  if (inferredKind && !st.locked && isAddressish(inputLabel)){console.log('decide skipping because address before lock'); return { skip:true, reason:'address_before_lock' }};
+  if (inferredKind && !st.locked && isAnchorLabel(inputLabel, inferredKind)){
+    lockIndexForSection(st, inferredKind,data);
+    console.log('decide function,sending new index locked:');
+  }
+
+  const hit = eduHit || expHit || addrHit;
+  const kindToUse = eduHit ? 'education' : expHit ? 'experience' : inferredKind;
+  console.log('decide finla kind to use:',kindToUse);
+  if (!kindToUse) return null;
+  // Start with the current/next index
+  let idx = st.locked ? st.index : (kindToUse ? (nextUnusedIndex(kindToUse, data) ?? 0) : 0);
+  console.log('decide index:',idx)
+  // updating dynamic key with correct kind and index
+  let tentativeKey = resolveDataKey(hit.dataKey, kindToUse, idx);
+  console.log('decide tenativeKey',tentativeKey);
+  //replacing all the dynmaic keys with tenative key index related
+  let relKey = toRelativeKey(tentativeKey, kindToUse);
+  console.log('decide relKey',relKey);
+  // If this relKey for the current index was already consumed, advance index
+  while (st.locked && isConsumed(kindToUse, idx, relKey)) {
+    const nextIdx = nextUnusedIndexFrom(kindToUse, data, idx + 1);
+    if (nextIdx == null) return null; // nothing left to fill
+    idx = nextIdx;
+    console.log('decided nextidx due to used idx and datakey',idx);
+    tentativeKey = resolveDataKey(hit.dataKey, kindToUse, idx);
+    console.log('decided non conusmed tentativekey',idx);
+    relKey = toRelativeKey(tentativeKey, kindToUse);
+    console.log('decided non conusmed relkey',idx);
+    // also promote lock to the new index so subsequent fields align
+    st.index = idx;
+    console.log('updating st.index because of used index old',st.index);
+    usedIndex[kindToUse].add(idx);
+    console.log('decide, if repeated,idx,tentativeKey,relKey:',idx,tentativeKey,relKey);
+  }
+  console.log('decide ,finally mapping',hit,'dataKey',tentativeKey,'kind',kindToUse,'index',idx);
+  markConsumed(kindToUse,idx,tentativeKey);
+  return { mapping: hit, dataKey: tentativeKey, kind: kindToUse, index: idx, reason: 'repeated' };
+}
+*/
+//=== NEW: Existing instance counting for minimal Add clicks
+function labelMatchesAnyRegex(label, regexList) {
+  const txt = normalizeFieldNameWithSpace(label || '');
+  return regexList.some(rx => rx.test(txt));
+}
+//finidng how many existing instances are there, calculating by getting container wi th inputs , if inputs>=2 consider as 1 instance.
+/*function countExistingInstancesNear(btn, sectionKey) {
+  const RX = sectionKey === 'education' ? flattenRegexes(eduMappings)
+           : sectionKey === 'experience' ? flattenRegexes(expMappings)
+           : [];
+  if (!RX.length) return 0;
+
+  const scope = btn?.closest?.(CONTAINER_UP_SEL) || document;
+  const CAND_SEL = 'section, fieldset, form, article, ul, ol, li, div';
+
+  const containers = [...scope.querySelectorAll(CAND_SEL)]
+    .filter(isElementVisible)
+    .slice(0, 800);
+
+  let instances = 0;
+  for (const c of containers) {
+    const inputs = [...c.querySelectorAll('input,select,textarea,[role="textbox"],[role="combobox"],[contenteditable="true"]')]
+      .filter(isElementVisible)
+      .slice(0, 80);
+    if (inputs.length === 0) continue;
+    let hits = 0;
+    for (const el of inputs) {
+      const lbl = labelFor(el);
+      if (labelMatchesAnyRegex(lbl, RX)) hits++;
+      if (hits >= 2) break;
+    }
+    if (hits >= 2) instances++;
+  }
+  return instances;
+}
+*/
+// Count indices we’ve already used for this kind (bounded by data length)
+function countExistingByLedger(kind, dataLen){
+  const used = usedIndex[kind] || new Set();
+  let n = 0;
+  for (const idx of used){ if (idx < dataLen) n++; }
+  return n;
+}
+//=== UPDATED: Add-runner — click only what’s needed
+export async function processAddSectionsFromData(autofillData) {
+  if (!autofillData || typeof autofillData !== 'object') {
+    console.log('[AddRunner] No data to process.');
+    return;
+  }
+  //A funciton to check add buttons with titles and filtering if it is edu/exp/or not.
+  let addIndex = findAddButtonsWithTitles(document)
+    .map(c => ({ ...c, sectionKey: titleToSectionKey(c.normTitle) }))
+    .filter(c => !!c.sectionKey);
+
+  if (!addIndex.length) {
+    console.log('[AddRunner] No Add buttons with recognizable titles found.');
+    return;
+  }
+
+  const plan = [];
+  for (const c of addIndex) {
+    const dataKey = SECTION_TO_DATAKEY[c.sectionKey]; //ginding key in autofilldata
+    const arr = Array.isArray(autofillData[dataKey]) ? autofillData[dataKey] : []; //length and value
+    const count = arr.length;
+    if (count <= 0) continue;
+
+    plan.push({
+      sectionKey: c.sectionKey,
+      dataKey,
+      count,
+      buttonRef: c.button,
+      heading: c.rawTitle,
+    });
+  }
+  console.log('processedaddbuttonfinction, plan wher it had buttons with edu/exp',plan);
+  if (!plan.length) {
+    console.log('[AddRunner] No sections have data; no clicks needed.');
+    return;
+  }
+
+  const MAX_PER_SECTION = 10;
+
+  for (const item of plan) {
+    const { sectionKey, dataKey } = item;
+    const arr = autofillData[dataKey];
+    const desired = Math.min(arr.length, MAX_PER_SECTION);
+
+    // how many instances already present?
+
+    //const freshBtnInfo = findAddButtonsWithTitles(document)
+      //.map(c => ({ ...c, sectionKey: titleToSectionKey(c.normTitle) }))
+      //.find(c => c.sectionKey === sectionKey);
+
+    //const btnForCount = freshBtnInfo?.button || item.buttonRef;
+    //const existing = btnForCount ? countExistingInstancesNear(btnForCount, sectionKey) : 0;
+
+    const existing = countExistingByLedger(sectionKey, arr.length);
+
+    // We only need to click for the remainder (cap by desired)
+    const desiredClicks = Math.max(0, Math.min(desired, arr.length) - existing);
+
+    //const desiredClicks = Math.max(0, desired - existing);
+    console.log(`[AddRunner] Section "${sectionKey}" → desired=${desired}, existing=${existing}, clicks=${desiredClicks}`);
+
+    if (desiredClicks === 0) continue;
+
+    let clicks = 0;
+    while (clicks < desiredClicks) {
+      const fresh = findAddButtonsWithTitles(document)
+        .map(c => ({ ...c, sectionKey: titleToSectionKey(c.normTitle) }))
+        .find(c => c.sectionKey === sectionKey);
+
+      const btn = fresh?.button || item.buttonRef;
+      if (!btn) { //|| !isElementVisible(btn)
+        console.warn(`[AddRunner] Add button for "${sectionKey}" not found/visible; stopping at ${clicks}/${desiredClicks}.`);
+        break;
+      }
+
+      const clicked = await safeClick(btn);
+      if (!clicked) {
+        console.warn(`[AddRunner] Failed to click Add for "${sectionKey}".`);
+        break;
+      }
+      await waitAfterExpand();
+
+      const container = resolveNewContainer(fresh);
+      if (!container) {
+        console.warn(`[AddRunner] Could not resolve new container after Add for "${sectionKey}".`);
+        break;
+      }
+
+      // Existing instances consume arr[0..existing-1]; new click indexes start at existing
+      const dataIdx = existing + clicks;
+      //const dataItem = arr[dataIdx];
+      /*if (!dataItem) {
+        console.warn(`[AddRunner] No data item at index ${dataIdx} for "${sectionKey}".`);
+        break;
+      }*/
+      //console.log('dataItem we are sending at starting is',dataItem);
+      try {
+        await fillOneBySection(sectionKey, container, autofillData);
+      } catch (e) {
+        console.error(`[AddRunner] Error filling ${sectionKey} #${dataIdx+1}:`, e);
+      }
+
+      clicks += 1;
+    }
+  }
+}
+
+//===Autofill
+let autofillData = null;
+// ===== Core fill =====
+/*function setValueWithNativeSetter(el, val){
+  try{
+    let proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+              : el instanceof HTMLInputElement ? HTMLInputElement.prototype
+              : HTMLElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc?.set) desc.set.call(el, val);
+    else el.value = val;
+  }catch{ el.value = val; }
+}*/
+// --- unified: native set + React/MUI tracker nudge ---
+function setValueWithNativeSetter(el, val){
+  try{
+    console.log('filling with native value in setter',val)
+    const oldVal = el.value; // needed to nudge React's _valueTracker
+
+    let proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+              : el instanceof HTMLInputElement ? HTMLInputElement.prototype
+              : HTMLElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc?.set){ desc.set.call(el, val);console.log('nat1');}
+    else{
+       el.value = val;
+       console.log('nat2');
+    }
+
+    // If React is managing this element, mark it dirty so onChange fires
+    const tracker = el._valueTracker;
+    if (tracker) tracker.setValue(oldVal);
+
+  }catch{
+    console.log('filling regulare value in setter',val)
+    el.value = val;
+  }
+}
+
+// --- tiny helper (mouse only) ---
+function simulateMouse(el){
+  const r = el.getBoundingClientRect();
+  const x = Math.floor(r.left + r.width/2), y = Math.floor(r.top + Math.min(r.height/2, 12));
+  const ev = (t)=>new MouseEvent(t,{bubbles:true,cancelable:true,clientX:x,clientY:y});
+  el.dispatchEvent(ev('mousedown'));
+  el.dispatchEvent(ev('mouseup'));
+  //el.dispatchEvent(ev('click'));
+}
+
+// --- updated: fires input+change, plus light keyboard fallback ---
+function fireInputEvents(el, val){ 
+  // try to hit editors that listen to beforeinput/input
+  try{ el.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertFromPaste',data:String(val)})); }catch{}
+  try{ el.dispatchEvent(new InputEvent('input',{bubbles:true,cancelable:true,inputType:'insertFromPaste',data:String(val)})); }catch{
+    el.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+  }
+
+  // tiny keyboard nudge (some UIs set dirty state on key events)
+  el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  el.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true}));
+
+  // finalizer most libs listen for
+  el.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+}
+/*
+function fillReactControlledInput(el, value) {
+  try {
+    const proto = el.__proto__ || Object.getPrototypeOf(el);
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    const setter = desc && desc.set;
+    if (!setter) return;
+
+    const prev = el.value;
+    el.focus();
+
+    // Set via native setter
+    setter.call(el, value);
+
+    // Fire React-compatible event chain
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+
+    // optional: if Ashby still ignores value, try beforeinput
+    if (prev !== value) {
+      el.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          composed: true,
+          inputType: 'insertText',
+          data: value,
+        })
+      );
+    }
+
+    console.log('Ashby react fill done', value);
+  } catch (e) {
+    console.warn('fillReactControlledInput failed', e);
+  }
+}
+*/
+
+// --- updated: just adds mouse + a couple key events; rest unchanged ---
+async function fillInput(el, value, opts = { mapped:false }){
+  if(!el || el.disabled || el.readOnly) return;
+  const tag = el.tagName?.toUpperCase?.() || '';
+  const type = (el.type||'text').toLowerCase();
+
+  let normVal = value;
+  if(normVal===true) normVal='yes';
+  if(normVal===false) normVal='no';
+
+  el.scrollIntoView({behavior:'smooth', block:'center'});
+  await delay(40);
+
+  if(type==='file'){ console.log('skipping becuase of file');return; }
+    // In your main fillInput()
+  if (isWorkdayCombo(el)) {
+    console.log('Fill Input workdaycombo for select');
+    //const ok = await fillWorkdayDropdown(el, value);
+    const ok = await fillWorkdayByButton(el, value);
+    if (ok) el.setAttribute('data-autofilled','true');
+    return;
+  }
+
+  if (tag === 'SELECT' || isComplexDropdown(el)) {
+    console.log('1. fill Input select complex type');
+    const ok = await fillSelectElement(el, value);
+    if (ok) el.setAttribute('data-autofilled', 'true');
+    return;
+  }
+
+  // CONTENTEDITABLE
+  if(el.isContentEditable || el.getAttribute('role')==='textbox'){
+    console.log('filling content editable and text')
+    simulateMouse(el);//not contains click event         // NEW
+    el.focus();
+    el.click();
+    try{
+      document.execCommand('selectAll',false,null);
+      document.execCommand('insertText', false, String(normVal));
+    }catch{
+      el.textContent = String(normVal);
+    }
+    fireInputEvents(el, normVal); //contains change event
+    el.dispatchEvent(new Event('change', { bubbles: true })); 
+    el.blur(); 
+    el.dispatchEvent(new Event('blur',{bubbles:true}));
+    await delay(50);
+    markAutofilled(el, opts.mapped ? 'mapped' : 'fallback');
+    if (opts.mapped) await waitForUiUpdates?.(2000);
+    return;
+  }
+
+  // STANDARD INPUT
+  console.log('filling standard inputs');
+  simulateMouse(el);              // NEW
+  el.focus();
+  el.click();
+  setValueWithNativeSetter(el, String(normVal)); //setting value
+  fireInputEvents(el, normVal);
+  el.blur(); 
+  el.dispatchEvent(new Event('blur',{bubbles:true}));
+  await delay(50);
+  markAutofilled(el, 'choice');
+
+}
+
+// --- updated: checkbox/radio adds mouse + key fallback, minimal ---
+async function checkElement(el, should){
+  const type = (el.type||'').toLowerCase();
+  if (type==='checkbox' || type==='radio'){
+    if (el.checked !== !!should){
+      simulateMouse(el);          // NEW
+      el.focus();
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      el.click?.();
+      // tiny keyboard fallback
+      el.dispatchEvent(new KeyboardEvent('keydown',{key:' ',bubbles:true})); // NEW
+      el.dispatchEvent(new KeyboardEvent('keyup',{key:' ',bubbles:true}));   // NEW
+      el.dispatchEvent(new Event('change',{bubbles:true}));
+      //fireInputEvents(el,should);
+    }
+    await delay(50);
+    markAutofilled(el, 'choice');
+  }
+}
+
+// ---------- Helpers to materialize mappings for a known section ----------
+function sectionToPrefix(sectionKey){
+  return sectionKey === 'education' ? 'educations'
+       : sectionKey === 'experience' ? 'experiences'
+       : sectionKey; // languages/certifications if you later add address for them
+}
+
+// Strip leading "<prefix>[x]." or "educations[x]." to a relative key
+function toRelativeKey(dataKey, sectionKey){
+  const prefix = sectionToPrefix(sectionKey);
+  return dataKey
+    .replace('{prefix}', prefix)
+    .replace(/^educations\[x]\./, '')
+    .replace(/^experiences\[x]\./, '')
+    .replace(new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\[x]\\.'), '');
+}
+
+//Main populating logic
 async function populateFields(inputs, data){
   if(!data) return;
   const normalizedData = {};
-  for(const key in data) normalizedData[normalizeFieldName(key)] = data[key];
+  for(const key in data){
+    normalizedData[normalizeFieldName(key)] = data[key];
+  }
   autofillData = normalizedData;
 
+
+  //try { await resumeFirstFromInputs(inputs,autofillData, 500); } catch(e){ console.log('No file Input found:',e); }
+
   const processedGroups = new Set();
+  const WD = isWorkdayHost();
 
-  const WD = isWorkdaySite();
-  let wdCountryReady = WD ? workdayCountryIsReady(inputs) : true;
-  const wdDeferred = [];
-
-  for(const obj of inputs){
+  for(let i=0;i<inputs.length;i++){
+    const obj = inputs[i];
     const el = obj.element;
     const groupId = obj.groupId;
-    const inputName = obj.humanName;
-
-    if(el.getAttribute('data-autofilled')==='true') continue;
-    if(el.disabled || el.readOnly) continue;
-
-    // Workday: skip touching "Country" entirely (usually default & sensitive)
-    if (WD && /\bcountry\b/i.test(inputName)) {
-      log('Skip Workday country');
+    let inputName = obj.humanName;
+    console.log('Inside populate fields, el, Id, name:',el,groupId,inputName);
+    if(el.getAttribute('data-autofilled')==='true'){
+      console.log('populate skipping autofilled element:',el);
       continue;
     }
-
-    let wdClass = 'other';
-    if (WD) {
-      wdClass = classifyForWorkday(inputName);
-      if ((wdClass === 'address' || wdClass === 'phone' || wdClass === 'name') && !wdCountryReady) {
-        wdDeferred.push(obj);
-        log('Deferring until country ready', inputName);
-        continue;
-      }
+    if(el.disabled || el.readOnly) continue;
+    if (WD && /\bcountry\b/i.test(inputName)) {
+      console.log('Skip Workday country');
+      continue;
     }
-
-    // ML bestKey with fallback
-    let bestKey;
-    try {
-      const filteredAutofillData = Object.fromEntries(Object.entries(autofillData).filter(([key]) => key !== "userid"));
-      const keys = Object.keys(filteredAutofillData);
-      const response = await new Promise((resolve,reject)=>{
-        chrome.runtime.sendMessage({
-          type: 'bestMatch',
-          text: inputName,
-          labels: keys
-        },(res)=> res && res.ok ? resolve(res) : reject(res?.error || "bestMatch failed"));
-      });
-      if(response) bestKey = response.label;
-      if (!bestKey) bestKey = runScoringFallback([inputName], Object.keys(autofillData));
-    } catch {
-      bestKey = runScoringFallback([inputName], Object.keys(autofillData));
+    // === New decision core for mappings / repeated sections ===
+    const decision = decideMappingForInput(el, inputName, autofillData, {
+      fieldMappings, eduMappings, expMappings, addressMappings
+    });
+    if(decision &&el.type==='text'&& el.value){console.log('making value as empty');el.value = '';} 
+    if (!decision || decision.skip){console.log('populate no decision el:',inputName);continue;}
+    let entry = decision.mapping;
+    let val = getByPath(autofillData, decision.dataKey);
+    console.log('populate vlaue by path',val);
+    // fallback to name/id if still empty and not address
+    if(val===undefined && (!decision.mapping?.type || decision.mapping?.type!=='address')){
+      val = autofillData[normalizeFieldName(el.name)] ?? autofillData[normalizeFieldName(el.id)];
     }
-
-    // mapping priority
-    let mapping = fieldMappings.find(m => m.keywords.some(rx => rx.test(inputName)));
-    if(!mapping && el.type === 'file') {
-      const around = bestLabelForFileInput(el) || nearestTextAround(el);
-      mapping = fieldMappings.find(m => m.keywords.some(rx => rx.test(around)));
-      log('file input label (fallback)', { around, mappingFound: !!mapping });
-    }
-
-    // derive value
-    let val = undefined;
-    if (mapping) {
-      const dk = mapping.dataKey;
-      val = normalizedData[dk];
-      if (val === undefined && bestKey) val = normalizedData[bestKey];
-    } else if (bestKey) {
-      val = normalizedData[bestKey];
-    }
+    if(val===undefined) continue;
 
     if(val===true) val='yes';
     if(val===false) val='no';
 
-    // fallback to name/id
-    if(val===undefined){
-      val = normalizedData[normalizeFieldName(el.name)] ?? normalizedData[normalizeFieldName(el.id)];
-    }
-    if(val===undefined && (!mapping || mapping.type!=='address')) {
-      // nothing we can fill for this input
-      continue;
-    }
-
-    // handle grouped radios/checkboxes once per group
     const t = (el.type||'').toLowerCase();
-    if((groupId || inputName) && (t==='radio' || t==='checkbox')){
+    if (t === 'checkbox' && !groupId && !inputName) {
+      const normVal = normalizeToBooleanLike(val);
+      const elementLabelNorm = normalizeToBooleanLike(findAssociatedLabel(el) || el.value || '');
+      if (elementLabelNorm === 'yes' || elementLabelNorm === 'no') {
+        const shouldCheck = normVal === elementLabelNorm;
+        await checkElement(el, shouldCheck);
+        continue;
+      }
+      const isTrueVal = normVal === 'yes';
+      if (isTrueVal) {
+        await checkElement(el, true);
+        continue;
+      } else if (normVal === 'no') {
+        // If the input explicitly says 'false', uncheck it.
+        await checkElement(el, false);
+        continue;
+      }
+    }
+    if((groupId || inputName) && (t==='radio' || t==='checkbox'|| isAshbyButtonEntry(obj))){
+      console.log('entered into checkbox groupId')
       const groupKey = groupId || normalizeFieldNameWithSpace(inputName);
       if(processedGroups.has(groupKey)) continue;
-
-      const groupEls = inputs
-        .filter(x => x.element !== el && (x.groupId === groupId || normalizeFieldNameWithSpace(x.humanName) === normalizeFieldNameWithSpace(inputName)) && ((x.element.type||'').toLowerCase()===t))
-        .map(x => x.element);
-      groupEls.push(el);
-
+      const normNameEq = (a,b)=> normalizeFieldNameWithSpace(a) === normalizeFieldNameWithSpace(b);
+      const groupObjs = inputs.filter(x => {
+        const sameGroup = x.element !== el && (x.groupId === groupId || (inputName && normNameEq(x.humanName, inputName)));
+        if (!sameGroup) return false;
+        const xt = (x.element.type || '').toLowerCase();
+        const isChoice = (xt === 'radio' || xt === 'checkbox') || isAshbyButtonEntry(x);
+        return isChoice;
+      });
+      groupObjs.push(obj);
       const checkboxMap = [];
-      for(const gEl of groupEls){
-        const label = normalizeFieldNameWithSpace(findAssociatedLabel(gEl) || gEl.value || '');
-        checkboxMap.push({label,element:gEl});
+      for (const g of groupObjs) {
+        let label;
+        if (isAshbyButtonEntry(g)) {
+          label = normalizeFieldNameWithSpace(g.optionText); // "yes" / "no"
+        } else {
+          const gEl = g.element;
+          label = normalizeFieldNameWithSpace(findAssociatedLabel(gEl) || gEl.value || '');
+        }
+        checkboxMap.push({ label, element: g.element, isButton: isAshbyButtonEntry(g) });
       }
-
       const desiredValues = Array.isArray(val) ? val.map(v=>String(v)) : [String(val)];
       const wantedNorms = desiredValues.map(v => normalizeFieldNameWithSpace(v));
 
-      // Boolean groups
       const wantedBool = desiredValues.map(v=>normalizeToBooleanLike(v));
       const labelsBool = checkboxMap.map(x=>normalizeToBooleanLike(x.label));
       if (new Set(wantedBool).size === 1 && (labelsBool.includes('yes') || labelsBool.includes('no'))){
         for (const x of checkboxMap){
           const should = normalizeToBooleanLike(x.label) === wantedBool[0];
-          await checkElement(x.element, should);
+          if (x.isButton) {
+            if (should) x.element.click();
+          } else {
+            await checkElement(x.element, should);
+          }
         }
         processedGroups.add(groupKey);
+        console.log('checkbox done');
         continue;
       }
-
-      // Otherwise: exact -> ML -> includes -> overlap
       for (const wanted of wantedNorms){
-        let finalCheck = checkboxMap.find(x=>x.label === wanted)?.element;
+        let final = checkboxMap.find(x=>x.label === wanted)
+                || checkboxMap.find(x=>x.label.includes(wanted));
 
-        if (!finalCheck){
-          try{
-            const response = await new Promise((resolve,reject)=>{
-              chrome.runtime.sendMessage({
-                type: 'bestMatch',
-                text: wanted,
-                labels: checkboxMap.map(x=>x.label)
-              },(res)=> res && res.ok ? resolve(res) : reject(res?.error || 'Best Match Failed'));
-            });
-            const bestLabel = normalizeFieldNameWithSpace(response.label || '');
-            finalCheck = checkboxMap.find(x=>x.label === bestLabel)?.element;
-          }catch{}
-        }
-        if(!finalCheck){
-          finalCheck = checkboxMap.find(x=>x.label.includes(wanted))?.element;
-        }
-        if(!finalCheck){
+        if(!final){
           const tokens = new Set(wanted.split(/\s+/).filter(Boolean));
-          let best = {el:null,score:-1};
+          let best = {item:null,score:-1};
           for (const x of checkboxMap){
             const ts = new Set(x.label.split(/\s+/).filter(Boolean));
             const overlap = [...tokens].filter(t=>ts.has(t)).length;
-            if (overlap > best.score) best = {el:x.element, score:overlap};
+            if (overlap > best.score) best = {item:x, score:overlap};
           }
-          finalCheck = best.el;
+          final = best.item;
         }
 
-        if(finalCheck) await checkElement(finalCheck, true);
+        if(final){
+          if (final.isButton) {
+            final.element.click();
+          } else {
+            await checkElement(final.element, true);
+          }
+        }
       }
-
-      // radios: ensure others off (only if we set one here)
       if (t==='radio'){
         for (const x of checkboxMap){
+          if (x.isButton) continue;
           const keep = x.element.getAttribute('data-autofilled') === 'true';
           if(!keep) await checkElement(x.element, false);
         }
       }
-
       processedGroups.add(groupKey);
       continue;
     }
-
-    // non-grouped inputs
+    if (el.tagName === 'BUTTON') continue; 
+    // non-grouped input fill
     el.classList.add('autofill-highlight');
     el.setAttribute('data-autofilled','true');
-
-    if(mapping?.type==='file' && el.type==='file' && /resume|cv/.test((inputName||'').toLowerCase())){
-      try{ await handleFileInput(el, val); await delay(120); }catch(e){ log('File handle error', e); }
-    } else if(mapping?.type==='address'){
-      if (isWorkdaySite() && !wdCountryReady) { wdDeferred.push(obj); continue; }
-      const prefix = getSectionPrefix(el);
-      await fillAddressFields(el, inputName, normalizedData, prefix); // (mapped waits inside)
-    } else if(mapping?.type==='date'){
-      await fillInput(el, formatDate(val), { mapped:true });
-    }
-    // Phone with code (best-effort)
-    else if(mapping?.type==='code' && mapping.handleCountryCode && mapping.dataKey==='phonenumber'){
-      if (isWorkdaySite() && !wdCountryReady) { wdDeferred.push(obj); continue; }
-      const prevSelect = el.previousElementSibling;
-      if(prevSelect?.tagName?.toUpperCase()==='SELECT'){
-        const parts = String(val).match(/^\+?(\d{1,3})?(\d+)$/);
-        if(parts && parts[1]){
-          const code = parts[1], num = parts[2];
-          let set=false;
-          for(const opt of prevSelect.options){
-            if(normalizeFieldNameWithSpace(opt.value).includes(code) || normalizeFieldNameWithSpace(opt.textContent||'').includes(code)){
-              opt.selected=true;
-              prevSelect.dispatchEvent(new Event('change',{bubbles:true}));
-              await fillInput(el, num, { mapped:true });
-              set=true; break;
-            }
-          }
-          if(!set) await fillInput(el, val, { mapped:true });
-        }else{
-          await fillInput(el, val, { mapped:true });
-        }
-      }else{
-        await fillInput(el, val, { mapped:true });
+    // If you handle special types, add here (file, date, code). Keeping simple:
+    if (entry.type === 'date'){
+      // If single-field, just fill normally
+      if (obj._dateMeta?.mode !== 'split' || !groupId){
+        await fillDate(el, obj, val, { currentlyWorkHere: !!entry?.currently_work_here });
+        el.setAttribute('data-autofilled','true');
+        continue;
       }
-    } else {
-      // ALWAYS fill mapped/non-mapped if we have a value (your spec)
-      await fillInput(el, val, { mapped: !!mapping });
+
+      // Split date: batch the local trio based on decision.kind/index + side (no sectionKey)
+      const bkey = batchKeyForDate(decision, obj);
+      if (processedDateBatches.has(bkey)) continue;
+
+      const peers = collectLocalSplitDatePeers(inputs, i, obj);
+      if (peers.length === 0){
+        // Fallback: just fill this one if we somehow didn't find mates
+        await fillDate(el, obj, val, { currentlyWorkHere: !!entry?.currently_work_here });
+        el.setAttribute('data-autofilled','true');
+        processedDateBatches.add(bkey);
+        continue;
+      }
+
+      for (const peer of peers){
+        await fillDate(peer.element, peer, val, { currentlyWorkHere: !!entry?.currently_work_here });
+        peer.element.setAttribute('data-autofilled','true');
+      }
+      processedDateBatches.add(bkey);
+      continue;
     }
 
-    // re-check workday readiness in case UX changed
-    if (WD && wdClass === 'country' && !wdCountryReady) {
-      wdCountryReady = workdayCountryIsReady(inputs);
+    if(t!=='file'){
+      await fillInput(el, val, { mapped:true });
     }
-
     setTimeout(()=>el.classList.remove('autofill-highlight'), 260);
-    if(groupId) processedGroups.add(groupId);
+    if(groupId){
+      processedGroups.add(groupId);
+    }
+
     await delay(60);
   }
 
-  // Workday second pass for deferred address/phone/name
-  if (WD && wdDeferred.length) {
-    wdCountryReady = workdayCountryIsReady(inputs);
-    if (wdCountryReady) {
-      log('Running deferred Workday fields');
-      await populateFields(wdDeferred, data);
-    }
-  }
 }
 
-// ====== Public init ======
-let autofillData = null;
+///=== AutofillInit
 export async function autofillInit(tokenOrData, dataFromPopup=null){
   const data = dataFromPopup ?? tokenOrData;
-  if(!data){ log('No data provided to autofillInit'); return; }
+  //console.log('[autofillInit] data:', data);
+  if(!data)return; 
   autofillData = data;
-
-  // Expand repeated rows if your data has arrays
-  try {
-    const eduArr =
-      (Array.isArray(data.education) && data.education) ||
-      (Array.isArray(data.educations) && data.educations) ||
-      (Array.isArray(data.schools) && data.schools) || [];
-    if (eduArr.length > 1) {
-      await ensureSectionEntries(RX_EDU, eduArr.length);
+  await waitForDomStable({ timeoutMs: 2500, quietMs: 180 });
+  let inputs = inputSelection();
+  //let resumeRes = null;
+  let resumeRes = { status: 'skip' };
+  // Only attempt resume attach/wait if we can actually attach in this frame
+  if (canAttachResumeInThisFrame()) {
+    try {
+      // your function returns {status, elapsedMs, method, ...}
+      resumeRes = await resumeFirstFromInputs(inputs, autofillData, 500);
+    } catch (e) {
+      console.log('[autofillInit] resumeFirstFromInputs error:', e);
+      resumeRes = { status: 'attach-failed', error: String(e) };
     }
-
-    const expArr =
-      (Array.isArray(data.experience) && data.experience) ||
-      (Array.isArray(data.experiences) && data.experiences) ||
-      (Array.isArray(data.jobs) && data.jobs) || [];
-    if (expArr.length > 1) {
-      await ensureSectionEntries(RX_EXP, expArr.length);
-    }
-
-    const langArr =
-      (Array.isArray(data.languages) && data.languages) || [];
-    if (langArr.length > 1) {
-      await ensureSectionEntries(RX_LANG, langArr.length);
-    }
-  } catch (e) {
-    log('ensureSectionEntries error', e);
   }
-
-  // First pass
-  const inputs = inputSelection();
-  log('All inputs (first pass)', inputs.length);
-  await populateFields(inputs, data);
-
-  // If resume UX is present OR we just uploaded a resume: wait 3s, then fill any leftovers.
-  if (resumeUploadHappened || hasResumeAutofillUX()) {
-    log('Detected resume-autofill UX or upload; scheduling second pass');
-    await delay(3000);
-    const all = inputSelection();
-    const unfilled = all.filter(i =>
-      i.element.getAttribute("data-autofilled") !== "true" &&
-      !i.element.disabled &&
-      !i.element.readOnly &&
-      !((i.element.type||'')==='checkbox' || (i.element.type||'')==='radio'
-         ? i.element.checked
-         : ((i.element.value ?? '').toString().trim().length > 0))
-    );
-    if (unfilled.length){
-      log(`Second pass after resume parse: ${unfilled.length} fields`);
-      await populateFields(unfilled, data);
-    } else {
-      log('Second pass: nothing left to fill');
-    }
+   // After resume path, pick settle strategy
+  const s = resumeRes?.status;
+  console.log('[autofillInit] resume status:', s, resumeRes);
+  if (s === 'parsed') {
+    // Expect big re-render after ATS prefill
+    await waitForPageSettle({ urlQuietMs: 900, domQuietMs: 650, timeoutMs: 10000 });
+    await waitForDomStable({ timeoutMs: 2000, quietMs: 150 });
+  } else if (s === 'skip' || s === 'attach-failed' || s === 'no-resume-file-input' || s === 'no-inputs' || s === 'timeout') {
+    // Do not waste 8–30s waiting for resume that didn’t happen here
+    await waitForDomStable({ timeoutMs: 800, quietMs: 120 });
   } else {
-    log('No resume-autofill UX detected; skipping second-pass delay');
+    // Unknown – be conservative, but not too long
+    await waitForDomStable({ timeoutMs: 1200, quietMs: 150 });
   }
-}
-
-// ====== Mutation Observer (robust, throttled) ======
-let debounce;
-let lastRun = 0;
-const RUN_MIN_GAP_MS = 700; // throttling for noisy UIs (e.g., Workday)
-const rootForObserver = document.querySelector("form") || document.body;
-const observer = new MutationObserver(mutations => {
-  clearTimeout(debounce);
-  debounce = setTimeout(async () => {
-    if (!autofillData) return;
-
-    if (Date.now() - lastRun < RUN_MIN_GAP_MS) return;
-
-    const hasNewInputs = mutations.some(m =>
-      [...m.addedNodes].some(n => n.querySelector?.('input:not([type="hidden"]), select, textarea, [contenteditable="true"], [role="textbox"], [role="combobox"], [aria-haspopup="listbox"]'))
-    );
-    if (!hasNewInputs) return;
-
-    const all = inputSelection();
-    const unfilled = all.filter(i =>
-      i.element.getAttribute("data-autofilled") !== "true" &&
-      !i.element.disabled &&
-      !i.element.readOnly
-    );
-
-    if (unfilled.length) {
-      lastRun = Date.now();
-      log(`New inputs detected: ${unfilled.length} — autofilling.`);
-      await populateFields(unfilled, autofillData);
-    }
-  }, 350);
-});
-observer.observe(rootForObserver, { childList:true, subtree:true });
-
-// (Optionally expose for manual re-run)
-export async function autofillRerun(){
-  if(!autofillData) return;
-  const inputs = inputSelection();
-  await populateFields(inputs, autofillData);
+  // Re-collect after whatever the page did
+  // inputs = inputSelection();
+  // inputs = await collectInputsWithRetry(3, 300);
+  inputs = await waitForInputs(3, 15, 250);
+  // Fill strategy (you can keep your logic; shown compactly)
+  await populateFields(inputs, data);
+  await processAddSectionsFromData(autofillData);
 }

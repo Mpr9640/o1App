@@ -1,77 +1,203 @@
+:root {
+  --ui-ink: #0b3e55;
+  --ui-muted: #597b8a;
+  --ui-accent: #9fd3e8;
+  --ui-border: #d9e7ee;
+  --ui-bg: #fff;
+  --ui-surface: #f9fcfd;
+
+  /* single source of truth for field height */
+  --field-h: 44px;
+}
+/* Field wrapper places label above the control without changing control height */
+.field{
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 6px;
+  min-width: 0; /* prevents grid overflow */
+}
+
+.label{
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--ui-muted);
+  line-height: 1.2;
+}
+
+/* tiny optional caption under a field */
+.hint{
+  grid-row: 3;
+  font-size: .8rem;
+  color: var(--ui-muted);  
+}
+
+/* ---------- Card ---------- */
 .page { width: 100%; margin: 0; padding: 0; }
 
 .candidateprofile{
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-border);
   border-radius: 16px;
-  padding: clamp(16px, 2.2vw, 24px);
-  box-shadow: 0 10px 30px rgba(0,0,0,.06);
+  padding: clamp(18px, 2.2vw, 26px);
+  box-shadow: 0 8px 28px rgba(11,62,85,.08);
+  color: var(--ui-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
+.candidateprofile * { box-sizing: border-box; }
 
-.sectionTitle { margin: 6px 0 14px; font-size: clamp(1.1rem, 2vw, 1.3rem); font-weight: 600; color: var(--app-text); }
-.sectionHeader { margin: 18px 0 8px; display: flex; align-items: center; justify-content: space-between; }
-.sectionHeader h2 { margin: 0; font-size: clamp(1rem,1.8vw,1.2rem); font-weight: 600; color: var(--app-text); }
+/* ---------- Headings ---------- */
+.sectionTitle{
+  margin: 8px 0 14px;
+  font-size: clamp(1.1rem,2vw,1.3rem);
+  font-weight: 800;
+  color: var(--ui-ink);
+}
+.sectionHeader{
+  margin: 18px 0 12px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.sectionHeader h2{ margin: 0; font-size: clamp(1rem,1.8vw,1.2rem); font-weight: 700; color: var(--ui-ink); }
 
-.grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0,1fr)); }
+/* ---------- Grid ---------- */
+.grid{
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+}
+.grid > * { min-width: 0; }                /* prevents long values from stretching a column */
 @media (max-width:1024px){ .grid{ grid-template-columns: 1fr; } }
 
-/* Inputs */
-.candidateprofile input[type="text"],
-.candidateprofile input[type="email"],
-.candidateprofile input[type="tel"],
-.candidateprofile input[type="url"],
-.candidateprofile input[type="date"],
-.candidateprofile input[type="number"],
-.candidateprofile textarea {
-  width: 100%; padding: 12px;
-  border-radius: 12px; border: 1px solid var(--app-border);
-  background: #fff; color: var(--app-text);
-  outline: none; transition: border-color .15s, box-shadow .15s;
-}
-.candidateprofile input:focus,
-.candidateprofile textarea:focus {
-  border-color: #d1d5db;
-  box-shadow: 0 0 0 2px rgba(17,24,39,.15);
-}
-textarea { min-height: 90px; resize: vertical; }
-
-/* Repeatable cards */
-.repeatCard{
-  border: 1px solid var(--app-border);
-  border-radius: 14px;
-  padding: 14px; margin-bottom: 12px;
-  background: var(--app-surface);
-}
-.repeatLegend{ font-size: .95rem; font-weight: 600; color: var(--app-text); padding: 0 6px; }
-
-/* File */
-.fileLabel{
-  display:inline-flex; align-items:center; gap:10px;
-  padding: 10px 12px; width: 100%;
-  background: var(--app-surface);
-  border: 1px dashed var(--app-border);
-  border-radius: 12px; cursor: pointer;
-}
-.fileLabel input[type="file"]{ display:none; }
-.fileText{ color: var(--app-muted); }
-.resumeLink{ margin-top:8px; color: var(--app-text); text-decoration: underline; }
-
-.checkboxRow{ display:inline-flex; align-items:center; gap:8px; padding: 10px 2px; user-select:none; }
-
-.primaryBtn, .btnAdd, .btnRemove {
-  border: 1px solid var(--app-border);
-  border-radius: 12px; padding: 10px 14px;
-  font-weight: 600; cursor: pointer;
-  color: var(--app-text); background: var(--app-surface-alt);
-  transition: background .15s, border-color .15s, transform .02s;
-}
-.primaryBtn:hover, .btnAdd:hover, .btnRemove:hover { background: #f3f4f6; }
-.primaryBtn, .btnRemove{
-  margin-top: 6px;
-}
-
+/* hide labels from layout entirely */
 .srOnly{
   position:absolute !important; width:1px !important; height:1px !important;
   padding:0 !important; margin:-1px !important; overflow:hidden !important;
   clip:rect(0,0,0,0) !important; white-space:nowrap !important; border:0 !important;
 }
+
+/* ---------- Uniform field base ---------- */
+/* All text-like controls share the same box metrics */
+.candidateprofile input:not([type="checkbox"]):not([type="radio"]),
+.candidateprofile select{
+  display: block;
+  width: 100%;
+  height: var(--field-h);                  /* hard height */
+  line-height: calc(var(--field-h) - 2px) !important; /* match minus borders */
+  padding: 0 14px;                         /* vertical padding moved to line-height */
+  border-radius: 12px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+  -webkit-appearance: none;
+          appearance: none;
+}
+
+.candidateprofile textarea{
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  outline: none;
+  resize: vertical;
+}
+
+.candidateprofile input::placeholder,
+.candidateprofile textarea::placeholder{ color: var(--ui-muted); }
+
+.candidateprofile input:hover,
+.candidateprofile textarea:hover,
+.candidateprofile select:hover{ background: #fff; }
+
+.candidateprofile input:focus,
+.candidateprofile textarea:focus,
+.candidateprofile select:focus{
+  border-color: var(--ui-accent);
+  box-shadow: 0 0 0 3px rgba(159,211,232,.35);
+  background: #fff;
+}
+
+/* make long textareas span full row */
+.grid > textarea { grid-column: 1 / -1; }
+
+/* ---------- Normalize numbers ---------- */
+.candidateprofile input[type="number"]::-webkit-outer-spin-button,
+.candidateprofile input[type="number"]::-webkit-inner-spin-button{ -webkit-appearance: none; margin: 0; }
+.candidateprofile input[type="number"]{ -moz-appearance: textfield; }
+
+/* ---------- DATE: force same visual height across engines ---------- */
+.candidateprofile input[type="date"]{
+  height: var(--field-h) !important;
+  padding: 0 36px 0 14px;                  /* space for icon */
+  line-height: calc(var(--field-h) - 2px) !important;
+}
+
+/* Chrome/Edge/Safari internal parts */
+.candidateprofile input[type="date"]::-webkit-datetime-edit{ padding: 0; margin: 0; }
+.candidateprofile input[type="date"]::-webkit-date-and-time-value{ min-height: 0 !important; }
+.candidateprofile input[type="date"]::-webkit-calendar-picker-indicator{
+  cursor: pointer; opacity: .75; margin-right: 6px;
+}
+
+/* ---------- Autofill: remove blue pill & height shift ---------- */
+.candidateprofile input:-webkit-autofill,
+.candidateprofile input:-webkit-autofill:hover,
+.candidateprofile input:-webkit-autofill:focus{
+  -webkit-text-fill-color: var(--ui-ink) !important;
+  caret-color: var(--ui-ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--ui-surface) inset !important;
+  box-shadow: 0 0 0 1000px var(--ui-surface) inset !important;
+  border-radius: 12px;
+}
+
+/* ---------- Repeatable sections & controls ---------- */
+.repeatCard{
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 14px;
+  background: var(--ui-surface);
+}
+.repeatLegend{ font-size: .95rem; font-weight: 700; color: var(--ui-ink); padding: 0 6px 6px; }
+
+.fileLabel{
+  display:inline-flex; align-items:center; gap:10px;
+  padding:12px 14px; width:100%;
+  background:var(--ui-surface);
+  border:1px dashed var(--ui-border);
+  border-radius:12px; cursor:pointer;
+}
+.fileLabel input[type="file"]{ display:none; }
+.fileText{ color: var(--ui-muted); }
+.resumeLink{ margin-top:8px; color: var(--ui-ink); text-decoration: underline; }
+
+.checkboxRow{
+  display:inline-flex; align-items:center; gap:8px;
+  padding: 8px 2px; user-select:none; font-size: .9rem; color: var(--ui-ink);
+}
+
+.primaryBtn, .btnAdd, .btnRemove{
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--ui-ink);
+  background: var(--ui-surface);
+  transition: background .15s, border-color .15s, transform .02s, box-shadow .15s;
+}
+.primaryBtn, .btnRemove{
+  margin-top: 4px;
+}
+.primaryBtn:hover, .btnAdd:hover, .btnRemove:hover{
+  background:#fff; border-color: var(--ui-accent);
+  box-shadow: 0 3px 10px rgba(11,62,85,.1);
+}
+.primaryBtn:active, .btnAdd:active, .btnRemove:active{ transform: translateY(.5px); }

@@ -1,23 +1,35 @@
-/* App shell: white/black theme scoped to AppLayout only */
+/* App shell: teal/blue theme aligned with your icon */
 .shell {
-  /* Theme tokens (scoped) */
+  /* Theme tokens */
   --app-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-  --app-bg: #ffffff;
-  --app-text: #111827;
-  --app-muted: #4b5563;
-  --app-border: #e5e7eb;
+
+  /* Palette derived from your icon: deep teal, ocean blue, soft aqua */
+  --app-bg: #f4fbfe;
+  --app-bg-grad-1: #e9f5fb;
+  --app-bg-grad-2: #f7fcff;
+  --app-text: #0b1b27;
+  --app-muted: #4b6b88;
+
+  --app-primary: #0f6c94;      /* deep teal */
+  --app-accent:  #1ea7c9;      /* ocean */
+  --app-border:  #cfe8f3;      /* light aqua edge */
   --app-surface: #ffffff;
-  --app-surface-alt: #fafafa;
-  --app-focus: #111827;
+  --app-surface-alt: #f2f9fd;  /* very light blue */
+  --app-focus:   #0f6c94;
 
   width: 100%;
   min-width: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
-  min-height: 100vh;
-  background: var(--app-bg);
+  min-height: 100dvh;
   color: var(--app-text);
   font-family: var(--app-font);
+
+  /* gentle background */
+  background:
+    radial-gradient(1200px 800px at -10% -10%, #bfe8f633, transparent 60%),
+    radial-gradient(900px 700px at 110% 10%, #a8e2f733, transparent 60%),
+    linear-gradient(180deg, var(--app-bg-grad-1), var(--app-bg-grad-2));
 }
 
 /* Sidebar */
@@ -31,44 +43,112 @@
   border-right: 1px solid var(--app-border);
   padding: 18px 14px;
   z-index: 10;
+  /* subtle glass */
+  backdrop-filter: saturate(120%) blur(8px);
+  -webkit-backdrop-filter: saturate(120%) blur(8px);
 }
 
-/* Title (less bold) */
-.brand { font-weight: 600; letter-spacing: .2px; margin-bottom: 10px; color: var(--app-text); }
+/* Brand row with icon BEFORE text */
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.brandLogo {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(15,108,148,0.25);
+  border: 2px solid #d8f0f8; /* matches icon rim */
+}
+.brandText {
+  font-weight: 700;
+  letter-spacing: .2px;
+  color: var(--app-text);
+}
 
 /* Nav */
 .nav { display: flex; flex-direction: column; gap: 10px; }
+
+/* Make <a> and <button> look IDENTICAL */
 .link {
-  display: flex; align-items: center; width: 100%;
-  padding: 12px 14px; border-radius: 12px;
+  /* reset differences between anchors and buttons */
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  line-height: 1.2;
+  padding: 0;
+  margin: 0;
+
+  /* shared card look */
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+
+  padding: 12px 14px;
+  border-radius: 12px;
   border: 1px solid var(--app-border);
   background: var(--app-surface);
-  color: var(--app-text); font-weight: 600;
-  cursor: pointer; text-decoration: none;
-  transition: background .15s, border-color .15s, transform .02s;
+  color: var(--app-text);
+  font-weight: 700;                 /* same weight for all, fixes “Logout looks lighter/smaller” */
+  cursor: pointer;
+  text-decoration: none;
+
+  transition: background .15s, border-color .15s, transform .02s, box-shadow .15s;
 }
-.link:hover { background: var(--app-surface-alt); }
+.link:hover {
+  background: var(--app-surface-alt);
+  border-color: #b7dff0;
+  box-shadow: 0 4px 14px rgba(15,108,148,0.12);
+}
 .link:active { transform: translateY(.5px); }
-.active { background: var(--app-surface-alt); border-color: #d1d5db; box-shadow: 0 0 0 1px #d1d5db inset; }
+
+.active {
+  background: linear-gradient(180deg, #ffffff, #f2f9fd);
+  border-color: #9fd3e8;
+  box-shadow:
+    0 0 0 1px #9fd3e8 inset,
+    0 6px 18px rgba(15,108,148,0.15);
+}
+
+/* keep spacing but same visual as others */
 .logout { margin-top: 12px; text-align: left; }
 
 .content {
-  width: 100%; min-width: 0; min-height: 100vh;
-  padding: 28px clamp(18px, 3vw, 36px); overflow: auto;
-  background: var(--app-bg); color: var(--app-text);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 28px clamp(18px, 3vw, 36px);
+  overflow: auto;
+  background: transparent; /* show shell bg */
+  color: var(--app-text);
 }
 
 /* Headings bold inside the app */
-.content :where(h1,h2,h3,h4,h5,h6) { font-weight: 700; color: var(--app-text); }
+.content :where(h1,h2,h3,h4,h5,h6) {
+  font-weight: 800;
+  color: var(--app-text);
+}
 
 /* Focus ring inside the app */
-.content :where(button,a,input,textarea,select):focus-visible {
+.content :where(button,a,input,textarea,select):focus-visible,
+.sidebar :where(button,a):focus-visible {
   outline: 2px solid var(--app-focus);
   outline-offset: 2px;
+  border-radius: 10px;
 }
 
 @media (max-width: 900px){
   .shell { grid-template-columns: 1fr; }
-  .sidebar { height: auto; border-right: 0; border-bottom: 1px solid var(--app-border); }
-  .nav { flex-direction: row; }
+  .sidebar {
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--app-border);
+  }
+  .nav { flex-direction: row; flex-wrap: wrap; }
 }

@@ -1,15 +1,46 @@
 .card {
+  position: relative; /* so delete button can be placed */
   display: grid;
   grid-template-columns: 44px 1fr auto;
   gap: 12px;
-  padding: 12px;
+  padding: 12px 12px 12px 12px;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
   background: #fff;
+  box-shadow: 0 6px 16px rgba(0,0,0,.04);
 }
+
+/* Top-right delete "×" */
+.del {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 8px;
+  border: 1px solid hsl(220, 13%, 91%);
+  background: #fff;
+  color: #6b7280;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: box-shadow .15s, transform .02s, border-color .15s, color .15s, background .15s;
+}
+.del:hover {
+  color: #ef4444;
+  border-color: #fecaca;
+  background: #fff5f5;
+  box-shadow: 0 4px 12px rgba(239,68,68,.18);
+}
+.del:disabled { opacity: .6; cursor: not-allowed; }
+
 .left { display: flex; align-items: flex-start; }
 .logo { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; background: #f3f4f6; }
 .logoFallback { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; }
+
 .body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .title { font-size: 16px; font-weight: 700; line-height: 1.2; }
 .sub { display: flex; gap: 6px; align-items: center; color: #6b7280; font-size: 14px; flex-wrap: wrap; }
@@ -28,3 +59,9 @@
 .controls select { padding: 6px 8px; border-radius: 8px; border: 1px solid #e5e7eb; }
 .controls button { padding: 6px 10px; border-radius: 8px; border: none; background: #3b82f6; color: #fff; cursor: pointer; }
 .controls button:disabled { opacity: .6; cursor: not-allowed; }
+
+/* small screens: keep it single column if container goes narrow */
+@media (max-width: 420px) {
+  .card { grid-template-columns: 38px 1fr; }
+  .right { grid-column: 1 / -1; align-items: flex-start; }
+}

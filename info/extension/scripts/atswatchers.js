@@ -1,18 +1,16 @@
-// scripts/atswatchers.js — canonical detail URL only + sticky meta merge + per-job dedupe (finalCanon)
+// scripts/atswatchers.js — generic success detector + referrer-aware canonical emit + submitted card
+// (updated: 2025-09-25, cleaned up)
 
 (function () {
   if (window.__JobAidATSWatchers__) return;
   window.__JobAidATSWatchers__ = true;
 
-  /* ======= tiny utils ======= */
+  /* tiny utils */
   const QS = (sel, root = document) => { try { return root.querySelector(sel); } catch { return null; } };
-  const QSA = (sel, root = document) => { try { return Array.from(root.querySelectorAll(sel)); } catch { return []; } };
-  const textOf = (el) => (el?.textContent || "").trim();
-  const txt = (sel, root = document) => textOf(QS(sel, root));
   const attr = (sel, a, root = document) => (QS(sel, root)?.getAttribute?.(a) || "").trim();
   const abs = (u) => { try { return new URL(u, location.href).href; } catch { return ""; } };
-  const hostname = () => location.hostname.toLowerCase();
 
+  // getting favicon href value and converting to an absolute url by resolving with present page url.
   const favicon = () => {
     const href =
       attr('link[rel="icon"]', 'href') ||
@@ -33,7 +31,7 @@
     const s = (t || '').trim();
     if (!s) return s;
     if (/^thank\s*you\b/i.test(s)) return '';
-    if (/application\s*(submitted|received)\b/i.test(s)) return '';
+    if (/application\s*(?:was\s*)?(submitted|received)\b/i.test(s)) return '';
     if (/^submission\b/i.test(s)) return '';
     return s;
   };
@@ -44,282 +42,92 @@
       catch { resolve(null); }
     });
   }
+  async function getCtx() { const r = await sendBg({ action: 'getJobContext' }); return r?.ctx || null; } // gets tab context
+  async function canonicalize(u) { const r = await sendBg({ action: 'canonicalizeUrl', url: u }); return r?.canonical || ''; } // canonicalized url
 
-  async function getCtx() {
-    const r = await sendBg({ action: 'getJobContext' });
-    return r?.ctx || null;
-  }
-
-  async function canonicalize(u) {
-    const r = await sendBg({ action: 'canonicalizeUrl', url: u });
-    return r?.canonical || '';
-  }
-
-  /* ========= Vendor table ========= */
-  const VENDORS = [
-    {
-      name: "LinkedIn",
-      hostRx: /(^|\.)linkedin\.com$/i,
-      success: {
-        urlRx: [/applicationSubmitted|thank[- ]?you/i],
-        textRx: [/application sent|successfully applied|application submitted/i],
-        selectors: ['.artdeco-toast-item__message']
-      },
-      extract() {
-        const title = txt(".top-card-layout__title, .jobs-unified-top-card__job-title, .jobs-unified-top-card__title, h1[data-test-job-title]") || txt("h1");
-        const company = txt(".jobs-unified-top-card__company-name a, .topcard__org-name-link, .top-card-layout__entity-info a");
-        const locationTxt = txt(".top-card-layout__second-subline .jobs-unified-top-card__bullet, .jobs-unified-top-card__primary-description");
-        const logo = (() => {
-          const i = QS('img.jobs-unified-top-card__company-logo-image') ||
-                    QS('.jobs-unified-top-card__company-logo img') ||
-                    QS('.artdeco-entity-image img');
-          return i?.src ? abs(i.src) : "";
-        })();
-        const jobId = (() => {
-          const m = location.pathname.match(/\/jobs\/view\/(\d+)/);
-          return m?.[1] || new URL(location.href).searchParams.get('currentJobId') || "";
-        })();
-        const canon = jobId ? `https://www.linkedin.com/jobs/view/${jobId}/` : ""; // leave empty if unknown here
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: "https://www.linkedin.com/favicon.ico" };
-      }
-    },
-    {
-      name: "Greenhouse",
-      hostRx: /greenhouse\.io|boards\.greenhouse\.io/i,
-      success: { urlRx: [/thanks|thank[- ]?you|submitted/i], textRx: [/thank you for applying|application submitted/i], selectors: ['.flash.notice', '#application.confirmation'] },
-      extract() {
-        const title = txt("h1.app-title, h1.job-title, h1") || document.title;
-        const company = (() => { const seg = location.pathname.split("/").filter(Boolean)[0]; return (seg || "").replace(/[-_]+/g, " "); })();
-        const locationTxt = txt(".location, [data-test='location']");
-        const logo = attr(".company-logo img","src") ? abs(attr(".company-logo img","src")) : "";
-        const jobId = (location.pathname.match(/\/jobs\/(\d+)/) || [])[1] || "";
-        const canon = jobId ? `https://${location.hostname}/jobs/${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: "https://boards.greenhouse.io/favicon.ico" };
-      }
-    },
-    {
-      name: "Lever",
-      hostRx: /jobs\.lever\.co/i,
-      success: { urlRx: [/thank[- ]?you|submitted/i], textRx: [/thank you for applying|application received/i] },
-      extract() {
-        const title = txt("h2.title, h1") || document.title;
-        const company = location.hostname.split(".")[0];
-        const locationTxt = txt(".location, [data-test='location']");
-        const logo = favicon();
-        const segs = location.pathname.split('/').filter(Boolean);
-        const jobId = segs[2] || "";
-        const canon = (segs[0] && jobId) ? `https://${location.hostname}/${segs[0]}/${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: "https://jobs.lever.co/favicon.ico" };
-      }
-    },
-    {
-      name: "Workday",
-      hostRx: /myworkdayjobs\.com|wd\d+\.myworkdayjobs\.com/i,
-      success: { urlRx: [/thank[- ]?you|submitted|confirmation/i], textRx: [/application submitted|thank you for applying/i] },
-      extract() {
-        const title = txt('[data-automation-id="jobPostingHeader"] h1') || txt("h1");
-        const company = location.hostname.split(".")[0];
-        const locationTxt = txt('[data-automation-id*="jobLocation"]');
-        const logo = favicon();
-        const segs = location.pathname.split('/').filter(Boolean);
-        const last = segs[segs.length - 1];
-        const jobId = (last && /[A-Z0-9]{8,}/i.test(last)) ? last : "";
-        const canon = jobId ? `https://${location.hostname}/${segs.slice(0,4).join('/')}/${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "iCIMS",
-      hostRx: /icims\.com/i,
-      success: { urlRx: [/confirmation|submitted|success/i], textRx: [/thank you for applying|application submitted/i], selectors: ['.iCIMS_Confirmation', '.iCIMS_MainWrapper .confirmation'] },
-      extract() {
-        const title = txt(".iCIMS_JobHeader .title, h1") || document.title;
-        const company = attr('meta[property="og:site_name"]','content') || location.hostname.split(".")[0];
-        const locationTxt = txt(".iCIMS_JobHeader .locations .iCIMS_JobHeaderFieldValue");
-        const logo = attr(".iCIMS_Logo img","src") ? abs(attr(".iCIMS_Logo img","src")) : favicon();
-        const jobId = (location.pathname.match(/\/jobs\/(\d+)/i) || [])[1] || "";
-        const canon = jobId ? `https://${location.hostname}/jobs/${jobId}/` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "SmartRecruiters",
-      hostRx: /smartrecruiters\.com/i,
-      success: { urlRx: [/thank[- ]?you|confirmation/i], textRx: [/thank you for your application|application submitted/i] },
-      extract() {
-        const title = txt("h1, .job-title") || document.title;
-        const company = location.pathname.split('/').filter(Boolean)[0]?.replace(/[-_]+/g, ' ') || '';
-        const locationTxt = txt(".location, [data-test='location']");
-        const logo = favicon();
-        return { title, company, location: locationTxt, logo, jobId: "", canon: "", source_icon: favicon() };
-      }
-    },
-    {
-      name: "Ashby",
-      hostRx: /jobs\.ashbyhq\.com/i,
-      success: { urlRx: [/thank[- ]?you/i], textRx: [/thanks for applying/i] },
-      extract() {
-        const title = txt("h1, .job-title") || document.title;
-        const company = location.pathname.split('/').filter(Boolean)[0]?.replace(/[-_]+/g, ' ') || '';
-        const locationTxt = txt("[data-testid='job-location'], .location");
-        const logo = favicon();
-        const segs = location.pathname.split('/').filter(Boolean).slice(0,3);
-        const canon = segs.length ? `https://${location.hostname}/${segs.join('/')}` : "";
-        return { title, company, location: locationTxt, logo, jobId: "", canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "Workable",
-      hostRx: /apply\.workable\.com/i,
-      success: { urlRx: [/thank[- ]?you|submitted/i], textRx: [/thank you for applying/i] },
-      extract() {
-        const title = txt("h1, .job-title") || document.title;
-        const company = location.pathname.split('/').filter(Boolean)[0]?.replace(/[-_]+/g, ' ') || '';
-        const locationTxt = txt(".location, [data-test='location']");
-        const logo = favicon();
-        const m = location.pathname.match(/\/j\/([A-Za-z0-9]+)/);
-        const jobId = m?.[1] || "";
-        const canon = jobId ? `https://${location.hostname}/j/${jobId}/` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "BambooHR",
-      hostRx: /bamboohr\.com/i,
-      success: { urlRx: [/thank[- ]?you|submitted/i], textRx: [/thank you for applying/i] },
-      extract() {
-        const title = txt("h1, .app-title") || document.title;
-        const company = location.hostname.split(".")[0];
-        const locationTxt = txt(".location, [data-test='location']");
-        const logo = favicon();
-        const m = location.pathname.match(/\/careers\/(\d+)/);
-        const jobId = m?.[1] || "";
-        const canon = jobId ? `https://${location.hostname}/careers/${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "Taleo/Oracle",
-      hostRx: /taleo\.net|oraclecloud\.com/i,
-      success: { urlRx: [/applicationSubmitted|thank[- ]?you|confirmation/i], textRx: [/thank you for applying|application submitted/i] },
-      extract() {
-        const title = txt("h1, .jobTitle") || document.title;
-        const company = attr('meta[property="og:site_name"]','content') || location.hostname.split(".")[0];
-        const locationTxt = txt(".location, [data-test='location']");
-        const logo = favicon();
-        const jobId = new URL(location.href).searchParams.get('job') || new URL(location.href).searchParams.get('jobId') || "";
-        const canon = jobId ? `${location.origin}${location.pathname.split('?')[0]}?job=${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "SuccessFactors",
-      hostRx: /successfactors\.com|career[0-9]\.successfactors\.|sap\.com/i,
-      success: { urlRx: [/application=success|thank[- ]?you/i], textRx: [/thank you for applying|application submitted/i] },
-      extract() {
-        const title = txt("h1, .jobTitle") || document.title;
-        const company = (new URLSearchParams(location.search).get("company") || "").replace(/[-_]+/g," ") || location.hostname.split(".")[0];
-        const locationTxt = txt(".jobLocation, .location");
-        const logo = favicon();
-        const jobId = new URL(location.href).searchParams.get('jobId') || new URL(location.href).searchParams.get('jobID') || "";
-        const canon = jobId ? `${location.origin}${location.pathname}?jobId=${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "ADP",
-      hostRx: /workforcenow\.adp\.com|(^|\.)adp\.com$/i,
-      success: { urlRx: [/confirmation|submitted|thank[- ]?you/i], textRx: [/thank you for applying|application submitted/i] },
-      extract() {
-        const title = txt("h1, .jobTitle") || document.title;
-        const company = attr('meta[property="og:site_name"]','content') || location.hostname.split(".")[0];
-        const locationTxt = txt(".location");
-        const logo = favicon();
-        const jobId = new URL(location.href).searchParams.get('uid') || new URL(location.href).searchParams.get('jobId') || "";
-        const canon = jobId ? `${location.origin}${location.pathname}?uid=${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "JazzHR",
-      hostRx: /app\.jazz\.co|applytojob\.com/i,
-      success: { urlRx: [/thank[- ]?you|submitted/i], textRx: [/thank you for applying/i] },
-      extract() {
-        const title = txt("h1, .job-title") || document.title;
-        const company = txt(".company") || location.hostname.split(".")[0];
-        const locationTxt = txt(".location");
-        const logo = favicon();
-        const m = location.pathname.match(/\/apply\/([A-Za-z0-9]+)/);
-        const jobId = m?.[1] || "";
-        const canon = jobId ? `https://${location.hostname}/apply/${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "Indeed",
-      hostRx: /indeed\.com/i,
-      success: { urlRx: [/apply\/thankyou|application-submitted|submitted/i], textRx: [/application submitted|thank you for applying/i] },
-      extract() {
-        const title = txt("h1, .jobsearch-JobInfoHeader-title") || document.title;
-        const company = txt(".jobsearch-InlineCompanyRating div:first-child, .jobsearch-CompanyInfoWithoutHeaderImage span") || location.hostname.split(".")[0];
-        const locationTxt = txt(".jobsearch-JobInfoHeader-subtitle div:last-child");
-        const logo = attr("img[alt*='logo' i]", "src") ? abs(attr("img[alt*='logo' i]", "src")) : favicon();
-        const jk = new URL(location.href).searchParams.get('jk') || new URL(location.href).searchParams.get('vjk') || "";
-        const canon = jk ? `https://${location.hostname}/viewjob?jk=${jk}` : "";
-        return { title, company, location: locationTxt, logo, jobId: jk, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "Dice",
-      hostRx: /dice\.com/i,
-      success: { urlRx: [/thank[- ]?you|application-submitted|submitted|confirmation/i], textRx: [/thank you for applying|application submitted/i] },
-      extract() {
-        const title = txt("h1, [data-cy='jobTitle']") || document.title;
-        const company = txt("[data-cy='companyName'], .company") || location.hostname.split(".")[0];
-        const locationTxt = txt("[data-cy='location'], .location");
-        const logo = favicon();
-        const jobId = new URL(location.href).searchParams.get('jobid') || new URL(location.href).searchParams.get('id') || "";
-        const canon = jobId ? `https://${location.hostname}/job-detail/${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
-    {
-      name: "Monster",
-      hostRx: /monster\.com/i,
-      success: { urlRx: [/thank[- ]?you|application-submitted|submitted/i], textRx: [/application submitted|thank you for applying/i] },
-      extract() {
-        const title = txt("h1, .job-title") || document.title;
-        const company = txt(".company, .job-company") || location.hostname.split(".")[0];
-        const locationTxt = txt(".location, [data-test='location']");
-        const logo = favicon();
-        const m = location.pathname.match(/\/job\/([^/]+)/);
-        const jobId = m?.[1] || "";
-        const canon = jobId ? `https://${location.hostname}/job/${jobId}` : "";
-        return { title, company, location: locationTxt, logo, jobId, canon, source_icon: favicon() };
-      }
-    },
+  /* generic submission detector */
+  const URL_SUCCESS_RX = /(thank[\s-]?you|application[-\s]?submitted|submission[-\s]?complete|post-?apply|submit_?apply|confirmation|success)/i;
+  const TEXT_SUCCESS_RX = /(thank\s+you\s+for\s+applying|application\s+(?:submitted|received)|successfully\s+(?:applied|submitted))/i;
+  const SUCCESS_SELECTORS = [
+    '.confirmation, .success, .thanks, .thank-you',
+    '.artdeco-toast-item__message',
+    '#application\\.confirmation, #application_confirmation, #application-confirmation',
+    '[data-testid*="thank" i], [data-testid*="confirm" i]'
   ];
 
-  const WHICH = () => VENDORS.find(v => v.hostRx.test(hostname()));
+  // Keywords and paths common to sign-in, login, authentication, and registration pages
+  const AUTH_RX = /(sign[-\s]?in|log[-\s]?in|register|authenticate|forgot|create[-\s]?account)/i;
+  const AUTH_SELECTORS = [
+    '#login-form, #sign-in-form, .login-page, .auth-page',
+    'input[type="password"]'
+  ];
 
-  const findByText = (rx, root = document) => {
-    const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
-    let node;
-    while ((node = it.nextNode())) {
-      const t = (node.textContent || "").trim();
-      if (t && rx.test(t)) return node;
-    }
-    return null;
-  };
+  // Detecting success page with auth-guard and context requirements
+  /*async function looksLikeSuccessPage() {
+    const ctx = await getCtx();
+    const activeCanonUrl = ctx?.first_canonical || ctx?.canonical || ''; // 1st seen page with that tab ID
+    const href = location.href;
+    const bodyText = (document.body?.innerText || '').slice(0, 8000);
 
-  const looksLikeSuccess = (v) => {
-    const uok = v.success.urlRx?.some(rx => rx.test(location.href)) || false;
-    const tok = v.success.textRx?.some(rx => findByText(rx)) || false;
-    const sok = v.success.selectors?.some(sel => QS(sel)) || false;
-    return uok || tok || sok;
-  };
+    // Auth / login-like pages should not be treated as success
+    if (AUTH_RX.test(href) || AUTH_RX.test(document.title)) return false;
+    if (AUTH_SELECTORS.some(sel => QS(sel))) return false;
+    if (bodyText.includes('password') && bodyText.includes('username')) return false;
+    
+    // A. URL Match
+    if (URL_SUCCESS_RX.test(href)) return true;
+    // Require we actually have a job-context canonical to bind to
+    if (!activeCanonUrl || activeCanonUrl.length < 10) return false;
+    // B. Text Match
+    if (TEXT_SUCCESS_RX.test(bodyText)) return true;
+    // C. Selector Match
+    if (SUCCESS_SELECTORS.some(sel => QS(sel))) return true;
 
-  // per-job once guard keyed by final canonical detail URL
+    return false;
+  } */
+  // Put this near your other constants if you want it configurable
+  const SUCCESS_SCORE_THRESHOLD = 0.6;
+
+  // Detecting success page with weighted scoring
+  async function looksLikeSuccessPage() {
+    const ctx = await getCtx();
+    const activeCanonUrl = ctx?.first_canonical || ctx?.canonical || '';
+
+    const href = location.href;
+    const title = document.title || '';
+    const bodyText = (document.body?.innerText || '').slice(0, 8000);
+
+    // 1) Guard against auth/login pages
+    if (AUTH_RX.test(href) || AUTH_RX.test(title)) return false;
+    if (AUTH_SELECTORS.some(sel => QS(sel))) return false;
+    if (bodyText.includes('password') && bodyText.includes('username')) return false;
+
+    // 2) Evaluate weighted signals
+    const urlHit      = URL_SUCCESS_RX.test(href) ? 1 : 0;              // 0.4
+    const textHit     = TEXT_SUCCESS_RX.test(bodyText) ? 1 : 0;         // 0.4
+    const canonHit    = activeCanonUrl && activeCanonUrl.length > 10 ? 1 : 0; // 0.2
+    const selectorHit = SUCCESS_SELECTORS.some(sel => QS(sel)) ? 1 : 0; // 0.3
+
+    const score =
+        (0.4 * urlHit) +
+        (0.4 * textHit) +
+        (0.2 * canonHit) +
+        (0.3 * selectorHit);
+
+    // Optional: clamp to 1 (in case multiple hits overlap conceptually)
+    const finalScore = Math.min(score, 1);
+
+    // Debug breakdown (remove if noisy)
+    /*console.debug('[JobAid] success-score', {
+      urlHit, textHit, canonHit, selectorHit,
+      score: finalScore, activeCanonUrl
+    }); */
+
+    return finalScore > SUCCESS_SCORE_THRESHOLD;
+  }
+
+
+  // per-job once guard keyed by final canonical detail URL for session
   function oncePerJob(finalCanon) {
     const k = `__jobAid_applied__${finalCanon}`;
     if (sessionStorage.getItem(k)) return false;
@@ -327,118 +135,117 @@
     return true;
   }
 
-  function showBanner(msg) {
-    const id = '__jobAidAppliedBanner__';
+  // Center-screen “Submitted ✓” card
+  function showSubmissionCard(card) {
+    const id = '__jobAidSubmissionCard__';
     if (document.getElementById(id)) return;
     const host = document.createElement('div');
     host.id = id;
     Object.assign(host.style, {
-      position: 'fixed',
-      top: '16px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      background: '#111827',
-      color: '#fff',
-      padding: '10px 14px',
-      borderRadius: '10px',
-      zIndex: 2147483647,
-      font: '14px system-ui',
-      boxShadow: '0 6px 22px rgba(0,0,0,.25)'
+      position:'fixed', top:'50%', left:'50%', transform:'translate(-50%,-50%)',
+      zIndex:2147483647, background:'#fff', border:'1px solid #e5e7eb',
+      borderRadius:'12px', boxShadow:'0 12px 40px rgba(0,0,0,.25)', width:'min(360px,92vw)',
+      padding:'14px'
     });
-    host.textContent = msg || 'Added into your applied job list';
+    host.innerHTML = `
+      <div style="display:grid;grid-template-columns:40px 1fr;gap:10px;align-items:start">
+        <img src="${card.logo_url || ''}" onerror="this.style.display='none'" style="width:40px;height:40px;border-radius:8px;background:#f3f4f6;"/>
+        <div>
+          <div style="font-weight:800;font:14px system-ui">${card.title || '—'}</div>
+          <div style="color:#6b7280;font:12px system-ui">${card.subtitle || ''}</div>
+          <div style="margin-top:8px;color:#16a34a;font-weight:700;font:12px system-ui">Submitted ✓</div>
+        </div>
+      </div>`;
     document.body.appendChild(host);
-    setTimeout(() => { host.style.opacity = '0'; host.style.transition = 'opacity .2s ease'; setTimeout(() => host.remove(), 220); }, 3200);
+    setTimeout(()=>{ host.style.opacity='0'; host.style.transition='opacity .2s'; setTimeout(()=>host.remove(),220); }, 4000);
   }
 
-  async function enrichWithStickyContext(details) {
-    const [ctx, bgCanon] = await Promise.all([getCtx(), canonicalize(location.href)]);
-    const fromCtx = ctx?.meta || {};
-    const ctxCanon = ctx?.first_canonical || ctx?.canonical || '';
+  // Example call from the content script: get cached canonical metadata
+  async function getMetadataFromCache(canonicalUrl) {
+    if (!canonicalUrl) return null;
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'getCanonicalMetadata',
+        canonicalUrl
+      });
+      if (response && response.ok && response.data) return response.data;
+    } catch (e) {
+      console.error("Error retrieving canonical metadata:", e);
+    }
+    return null;
+  }
 
-    // sanitize title from confirmation pages
-    const sanitizedTitle = sanitizeTitle(details.title);
+  // Getting canonical information for present submission page url.
+  async function enrichWithStickyContext() {
+    const [ctx, bgCanon] = await Promise.all([getCtx(), canonicalize(location.href)]);
+    const ctxCanon = ctx?.first_canonical || ctx?.canonical || '';
+    const cacheMeta = await getMetadataFromCache(ctxCanon);
+
+    // Prioritize cache data, then context data
+    const fromCtx = cacheMeta || ctx?.meta || {};
     const merged = {
-      ...details,
-      title: sanitizedTitle || fromCtx.title || details.title || '',
-      company: details.company || fromCtx.company || '',
-      location: details.location || fromCtx.location || '',
-      logo: details.logo || fromCtx.logoUrl || '',
+      title: sanitizeTitle(fromCtx.title || document.title || ''),
+      company: fromCtx.company || '',
+      location: fromCtx.location || '',
+      logo: fromCtx.logoUrl || favicon()
     };
 
-    // compute final canonical detail URL preference
-    const vendorCanon = (details.canon || '').trim();
-    const finalCanon = (ctxCanon || vendorCanon || bgCanon || location.href);
-
+    const finalCanon = (ctxCanon || bgCanon || location.href);
     return { ...merged, canon: finalCanon };
   }
 
-  // UPDATED: standardized reporter using ctx.first_canonical and instant cache hint
-  async function emitApplied(vendor, details) {
-    const meta = details || {};
+  // Reporting success to background.
+  async function reportSuccess() {
     try {
-      const ctx = await getCtx();
-      const target = ctx?.first_canonical || ctx?.canonical || (await canonicalize(location.href));
+      const info = await enrichWithStickyContext();
+      const finalCanon = (info?.canon || '').trim();
+      if (!finalCanon) return;
+
+      if (!oncePerJob(finalCanon)) return;
+
+      try {
+        const chk = await sendBg({ action: 'checkAppliedForUrl', url: finalCanon, title: info.title, company: info.company, location: info.location });
+        if (chk?.ok && chk.applied_at) return;
+      } catch {}
+
       const applied_at = new Date().toISOString();
+
+      // Let background bind to the original platform via referrer when ATS IDs differ
+      await sendBg({
+        action: 'submissionDetected',
+        pageCanonical: finalCanon,
+        referrer: document.referrer || ''
+      });
 
       const payload = nonEmptyMerge({
         action: 'appliedJob',
-        url: target,
-        applied_at,
+        url: finalCanon,
+        applied_at
       }, {
-        title: sanitizeTitle(meta.title || document.title || ''),
-        company: meta.company || '',
-        location: meta.location || '',
-        logo_url: meta.logo || favicon(),
-        job_id: meta.jobId || '',
-        ats_vendor: vendor?.name?.toLowerCase() || hostname(),
+        title: info.title || '—',
+        company: info.company || '',
+        location: info.location || '',
+        logo_url: info.logo || favicon(),
+        ats_vendor: location.hostname,
         preview_card: {
-          title: meta.title || '—',
-          subtitle: [meta.company, meta.location].filter(Boolean).join(' • '),
-          logo_url: meta.logo || favicon(),
-          link_url: target,
-        },
+          title: info.title || '—',
+          subtitle: [info.company, info.location].filter(Boolean).join(' • '),
+          logo_url: info.logo || favicon(),
+          link_url: finalCanon
+        }
       });
 
-      await sendBg(payload);
-      // optional fast-path hint; background may ignore if unsupported
-      await sendBg({ action: 'rememberAppliedInstant', url: target, applied_at });
+      // If you want persistence, uncomment these:
+      // await sendBg(payload);
+      // await sendBg({ action: 'rememberAppliedInstant', url: finalCanon, applied_at });
 
-      showBanner('Added into your App applied job list');
+      showSubmissionCard(payload.preview_card); // center notification
     } catch {}
-  }
-
-  function shouldRun() {
-    // Run if success markers exist (even if our floating icon isn't present)
-    const v = WHICH();
-    return v ? looksLikeSuccess(v) : false;
   }
 
   async function runCheck() {
-    if (!shouldRun()) return;
-    const v = WHICH(); if (!v) return;
-
-    // Confirm success again (SPAs can bounce)
-    if (!looksLikeSuccess(v)) return;
-
-    const raw = v.extract ? v.extract() : null;
-    if (!raw) return;
-
-    // Merge with sticky context and canonicalize to detail page
-    const info = await enrichWithStickyContext(raw);
-
-    const finalCanon = (info?.canon || '').trim();
-    if (!finalCanon) return;
-
-    // De-dupe strictly by final canonical detail URL
-    if (!oncePerJob(finalCanon)) return;
-
-    // Extra guard: if already saved for this URL, skip
-    try {
-      const chk = await sendBg({ action: 'checkAppliedForUrl', url: finalCanon });
-      if (chk?.ok && chk.applied_at) return;
-    } catch {}
-
-    await emitApplied(v, info);
+    if (!(await looksLikeSuccessPage())) return;
+    await reportSuccess();
   }
 
   // Debounced schedule
@@ -466,3 +273,5 @@
   // Hook so contentscript can ping after icon mount
   window.initATSWatchers = function initATSWatchers() { scheduleCheck(); };
 })();
+
+// (Removed trailing duplicate SUCCESS regex/constants)

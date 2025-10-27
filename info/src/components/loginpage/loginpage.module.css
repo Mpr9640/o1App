@@ -1,27 +1,16 @@
-html,body{
-  height: 100vh;
-  width: 100vw;
-  margin:0;
-  padding:0;
-}
-body{
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  background: #f7f7f7;
-  overflow: hidden;
-}
-
-/* Main container for the form */
+/* All rules scoped to the login component — no global selectors */
 .entryform{
   width: 800px;
   height: 500px;
   display: flex;
   box-shadow: 0 0 15px rgba(0,0,0,0.2);
-  position:relative;
+  position: relative;
   overflow: hidden;
   transition: all 0.5s ease;
+  background: #fff;
+  border-radius: 12px;
 }
+
 .leftpanel{
   width: 50%;
   background: #fff;
@@ -33,6 +22,7 @@ body{
   border-bottom-right-radius: 20%;
   transition: 0.5s ease;
 }
+
 .rightpanel{
   width: 50%;
   background: #3498db;
@@ -43,116 +33,50 @@ body{
   border-top-left-radius: 20%;
   border-bottom-left-radius: 20%;
   transition: 0.5s ease;
+  color: #fff;
 }
 
-.entry{
-  margin-bottom: 20px;
-}
-.entry input, .entrypasswordcontainer input{
+.entry{ margin-bottom: 20px; }
+.entry input,
+.entrypasswordcontainer input{
   width: 100%;
   padding: 10px;
-  border: 1px solid #ccc;
-  border-radius: 5px;
+  border: 1px solid #ccd9e2;
+  border-radius: 10px;
+  color: #0b3e55;        /* font color tweak only */
+  background: #f9fcfd;
 }
-.entrypasswordcontainer{
-  position: relative;
-  margin-bottom: 20px;
-}
+
+.entrypasswordcontainer{ position: relative; margin-bottom: 20px; }
 .showpassword{
-  position: absolute;
-  top: 50%;
-  right: 0px;
-  background: transparent;
-  border:none;
-  cursor: pointer;
+  position: absolute; top: 50%; right: 0;
   transform: translateY(-50%);
+  background: transparent; border: none; cursor: pointer;
 }
-.forgotpassword{
-  displaY:flex;
-  justify-content: flex-end;
-}
-.forgotpassword button{
-  cursor: pointer;
-}
+
+.forgotpassword{ display:flex; justify-content: flex-end; }
+.forgotpassword button{ cursor: pointer; }
+
+.actionbuttons{ display: flex; gap: 10px; }
 .actionbuttons button, .togglingbutton, .skip button{
-  padding: 2px 10px;
-  border: none;
-  border-radius: 5px;
-  cursor: pointer;
-  width: 80px;
-  height: 40px;
+  padding: 2px 10px; border: none; border-radius: 5px; cursor: pointer;
+  width: 80px; height: 40px;
 }
-.actionbuttons{
-  display: flex;
-  flex-direction: row;
-  gap: 10px;
-}
-/* styling fot pop-up container */
+
+/* constraints popover */
 .constraintspopup{
-  position: absolute;
-  top: 80%;
-  left: 0;
-  z-index: 1000;
-  background-color: #fff;
-  border: 1px solid #ccc;
-  padding: 10px;
-  box-shadow: 0 2px 5px rgba(0,0,0.2);
-  width: 250px;
+  position: absolute; top: 80%; left: 0; z-index: 20;
+  background-color: #fff; border: 1px solid #ccd9e2;
+  padding: 10px; box-shadow: 0 2px 5px rgba(0,0,0,.1); width: 250px;
 }
-/* List styling */
-.constraintslist{
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  font-size: 0.9rem;
-}
-.constraintslist li.valid{
-  color: green;
-}
-.constraintslist li.invalid{
-  color: red;
-}
+.constraintslist{ list-style: none; margin: 0; padding: 0; font-size: 0.9rem; }
+.constraintslist li.valid{ color: #1f8f4e; }
+.constraintslist li.invalid{ color: #d12c2c; }
 
-@media (max-width: 1024px) {
-  body{
-    margin:0;
-    padding: 0;
-    width: 100vw;
-    height: 100vh;
-  }
-
-  .entryform {
-    width: 500px;
-    height:fit-content;
-    flex-direction: column;
-    align-items: center;
-  }
-  .leftpanel, .rightpanel {
-    width: 90% !important;
-    padding: 20px;
-    text-align: center;
-  }
-  .leftpanel{
-    border-bottom-left-radius: 10%;
-    border-bottom-right-radius: 10%;
-    border-top-left-radius: 0px;
-    border-top-right-radius: 0px;
-  }
-  .rightpanel{
-    border-bottom-left-radius: 0px;
-    border-bottom-right-radius: 0px;
-    border-top-left-radius: 10%;
-    border-top-right-radius: 10%;
-  }
-
-  .entry input, .entrypasswordcontainer input{
-    width: 95%;
-  }
-  
+@media (max-width: 1024px){
+  .entryform{ width: 500px; height: fit-content; flex-direction: column; align-items: center; }
+  .leftpanel, .rightpanel{ width: 90% !important; padding: 20px; text-align: center; }
+  .leftpanel{ border-radius: 0 0 10% 10%; }
+  .rightpanel{ border-radius: 10% 10% 0 0; }
 }
-/* For devices with width up to 600px (mobile) */
-@media (max-width: 600px) {
-  .entryform {
-    width: 400px;
-  }
-}
+@media (max-width: 600px){ .entryform{ width: 400px; } }

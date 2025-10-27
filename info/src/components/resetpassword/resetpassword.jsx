@@ -1,10 +1,11 @@
 import React, {useState} from "react";
-import {useLocation, useNavigate} from 'react-router-dom';
+import {useLocation, useNavigate,useOutletContext} from 'react-router-dom';
 import axios from "axios";
 import styles from "./resetpassword.module.css";
 const ResetPassword = () =>{
     const navigate = useNavigate();
     const { search } = useLocation();
+    const { showAlert } = useOutletContext();
     const[showConstraints, setShowConstraints] = useState(false);
     const[showPassword, setShowPassword] = useState(false);
     const[newPassword, setNewPassword] = useState("");
@@ -52,22 +53,25 @@ const ResetPassword = () =>{
     const handleSubmit = async(e) =>{
         e.preventDefault();
         if(newPassword !== confirmPassword){
-            setError("Passwords do not match");
+            //setError("Passwords do not match");
+            showAlert('Passwords do not match');
             return;
         }
         try{
             //send post request to the backend to reset the password
             const response = await axios.post(`${API_BASE_URL}/api/reset_password`,{token,new_password: newPassword,});
-            setMessage(response.data.msg);
-            setError('');
+            //setMessage(response.data.msg);
+            //setError('');
+            showAlert(response.data.msg || "Password reset successful");
             navigate("/")
     
         }
         catch(err){
-            setError("Failes to reset the password. Please try again");
-            setMessage('');
-            setError(err);
-            console.log(err);
+            //setError("Failes to reset the password. Please try again");
+            //setMessage('');
+            //setError(err);
+            //console.log(err);
+            showAlert(err.response?.data?.detail || "Failed to reset password");
         }
 
     };

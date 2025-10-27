@@ -1,8 +1,4 @@
-// contentscript.js — Tiered detector + schema/DOM/keyword JD extraction + stricter gating + stable job key
-
-/* =========================
-   0) Globals / tiny helpers
-   ========================= */
+//1. workday, ashby and greenhouse. (oracle.cloud)needs to fix
 
 const URL_KEYWORDS = ['apply','application','job','jobs','career','careers','hiring','employment','positions','form'];
 
@@ -10,22 +6,47 @@ const ATS_HOST_MAP = [
   /greenhouse\.io|boards\.greenhouse\.io/i, /lever\.co/i,
   /myworkdayjobs\.com|workday\.com/i, /icims\.com/i, /taleo\.net/i,
   /ashbyhq\.com/i, /smartrecruiters\.com/i, /workable\.com/i,
-  /bamboohr\.com/i, /jobvite\.com/i, /successfactors\.com/i,
+  /bamboohr\.com/i, /jobvite\.com/i, /successfactors\.com/i,/metacareers\.com/i
 ];
 
 const KNOWN_JOB_HOSTS = [
   /(^|\.)linkedin\.com$/i, /indeed\.com/i, /dice\.com/i, /glassdoor\.com/i,
   /monster\.com/i, /careerbuilder\.com/i, /jobright\.ai/i, ...ATS_HOST_MAP
 ];
+// ---- Frame role split (works on all hosts) ----
+const IS_TOP_WINDOW = (window.top === window.self);
+//const IS_TOP_WINDOW = (window.top === window.self);
+function log(...args) {
+  const tag = IS_TOP_WINDOW ? '[TOP]' : `[IFRAME ${location.origin}]`;
+  console.log(tag, ...args);
+}
+
+// Does this page embed an ATS/vendor iframe?
+function pageHasAtsIframe() {
+  try {
+    const iframes = Array.from(document.querySelectorAll('iframe'));
+    if (!iframes.length) return false;
+    const rx = new RegExp(ATS_HOST_MAP.map(r => r.source).join('|'), 'i');
+    const src = fr.src || fr.getAttribute('data-src') || '';
+    return iframes.some(fr => rx.test(src || ''));
+  } catch { return false; }
+}
+
+// Role assignment:
+// - UI (icon/banner triggers) only on top window
+// - Parsing (JD, skills, forms) inside ATS iframe when present; otherwise fallback to top
+const ROLE_UI = IS_TOP_WINDOW;
+const ROLE_PARSE = pageHasAtsIframe() ? !IS_TOP_WINDOW : true;
+
 
 /* Negative & hard-block guards */
 const NEGATIVE_HOSTS = [
-  /github\.com$/i, /stackoverflow\.com$/i,
+  /github\.com$/i, /stackoverflow\.com$/i,/localhost/i,
   /mail\.google\.com$/i, /calendar\.google\.com$/i, /notion\.so$/i,
   /confluence\./i, /slack\.com$/i, /teams\.microsoft\.com$/i
 ];
 const HARD_BLOCK_HOSTS = [
-  /(^|\.)openai\.com$/i, // blocks ChatGPT and any openai.com subdomain
+  /(^|\.)chatgpt\.com$/i, // blocks ChatGPT and any openai.com subdomain
 ];
 const SEARCH_ENGINE_HOSTS = [/google\./i, /bing\.com/i, /duckduckgo\.com/i, /search\.yahoo\.com/i, /ecosia\.org/i];
 
@@ -39,11 +60,23 @@ let percentage = 0;
 let allSkills = [];
 let currentJobKey = "";
 let lastActiveLIMeta = null;
+let lastActiveGenericMeta = null;
+let _didFullJDForUrl = new Set();
 
 const clamp = (v,min,max)=>Math.max(min,Math.min(v,max));
 const txt = (el) => (el?.innerText || el?.textContent || '').trim();
 const sanitize = (s) => String(s || '').replace(/\s{2,}/g,' ').trim();
-const absUrl = (u) => { try { return u ? new URL(u, location.href).href : ''; } catch { return ''; } };
+// Safe URL helpers
+function safeURL(str, base = location?.href || "") {
+  try {
+    if (!str) return null;
+    // If caller passes a fully qualified URL, use it; otherwise use base.
+    return base ? new URL(str, base) : new URL(str);
+  } catch {
+    return null;
+  }
+}
+const absUrl = (u) => { try {/* return u ? new URL(u, location.href).href : '';*/ const out = safeURL(u, location?.href || ""); return out ? out.href : ""; } catch { return ''; } };
 const hash = (s) => { let h=0; for (let i=0;i<s.length;i++) h=Math.imul(31,h)+s.charCodeAt(i)|0; return String(h); };
 const debounce = (fn, wait=400) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }; };
 const hostMatches = (arr) => arr.some(rx => rx.test(location.hostname));
@@ -63,19 +96,121 @@ const isVisible = (el) => {
   if (!el.offsetParent && cs.position !== 'fixed') return false;
   return true;
 };
+// IcIms
+/* =========================
+   0c) UI lock + geometry helpers (ADD THIS)
+   ========================= */
+
+// Per-origin + per-path UI lock to prevent double icons when same-origin iframes also run the script
+const __JA_FRAME_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const __JA_LOCK_KEY = `__jobAidUiLock__::${location.origin}::${(safeURL(location.href)?.pathname || '/')}`;
+
+function acquireUiLock() {
+  try {
+    const owner = localStorage.getItem(__JA_LOCK_KEY);
+    if (owner && owner !== __JA_FRAME_ID) return false;
+    localStorage.setItem(__JA_LOCK_KEY, __JA_FRAME_ID);
+    window.addEventListener('unload', () => {
+      try { if (localStorage.getItem(__JA_LOCK_KEY) === __JA_FRAME_ID) localStorage.removeItem(__JA_LOCK_KEY); } catch {}
+    });
+    return true;
+  } catch { return true; } // if storage fails, fail-open (still only 1 icon due to DOM id check)
+}
+function releaseUiLock() {
+  try { if (localStorage.getItem(__JA_LOCK_KEY) === __JA_FRAME_ID) localStorage.removeItem(__JA_LOCK_KEY); } catch {}
+}
+
+// pick the element closest to the viewport center (used by getGenericActiveCardMeta)
+function closestToViewportCenter(nodes) {
+  let best = null, bestD = Infinity;
+  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  for (const n of nodes || []) {
+    if (!n || !isVisible(n)) continue;
+    const r = n.getBoundingClientRect();
+    const x = Math.max(r.left, Math.min(cx, r.right));
+    const y = Math.max(r.top, Math.min(cy, r.bottom));
+    const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+    if (d < bestD) { bestD = d; best = n; }
+  }
+  return best;
+}
+/* =========================
+   0d) Primary job block selector (ADD THIS)
+   ========================= */
+
+function selectPrimaryJobBlock(doc = document) {
+  const $$ = (s, r = doc) => Array.from(r.querySelectorAll(s));
+  const visible = (el) => {
+    if (!el) return false;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+
+  const CANDIDATES = [
+    'main', '#main', '[role="main"]',
+    '#iCIMS_JobContent', '.iCIMS_JobContent', '.iCIMS_JobDescription', '.iCIMS_JobHeader',
+    '.iCIMS_Profile', '.iCIMS_CandidateProfile', '.iCIMS_Application', '.iCIMS_Apply',
+    '.iCIMS_Content', '.icims-portal', '.application-container',
+    '.job-details', '.job', '.job-application', '.application',
+    '.wizard', '.stepper', '.progress-tracker', '.application-steps', '.wizardSteps'
+  ].join(',');
+
+  const hasTitle = (root) => !!root.querySelector('h1,h2,[role="heading"]');
+  const longText = (root) => ((root.textContent || '').replace(/\s+/g,' ').length > 500);
+  const applySignals = (root) => {
+    const inputs = root.querySelectorAll('input,select,textarea');
+    const stepper = root.querySelector('[data-automation-id*="stepper" i], .wd-step, .progress-tracker, .application-steps, .wizardSteps, .stepper');
+    const btn = Array.from(root.querySelectorAll('a,button,input[type=submit]')).some(el =>
+      /apply|begin application|start application|continue|next|submit/i.test((el.textContent || el.value || '').trim())
+    );
+    return inputs.length >= 6 || !!stepper || !!btn;
+  };
+
+  const blocks = $$(CANDIDATES).filter(visible);
+  if (!blocks.length) return null;
+
+  const topMost = blocks.filter(el => !blocks.some(o => o !== el && o.contains(el)));
+  if (!topMost.length) return null;
+
+  function score(el) {
+    const r = el.getBoundingClientRect();
+    const area = r.width * r.height;
+    const jdLike = (hasTitle(el) && longText(el)) ? 2 : 0;
+    const applLike = applySignals(el) ? 1 : 0;
+    return { jdLike, applLike, area, top: r.top || 0 };
+  }
+
+  topMost.sort((a,b) => {
+    const sa = score(a), sb = score(b);
+    if (sa.jdLike !== sb.jdLike) return sb.jdLike - sa.jdLike;
+    if (sa.applLike !== sb.applLike) return sb.applLike - sa.applLike;
+    if (sa.area !== sb.area) return sb.area - sa.area;
+    return sa.top - sb.top;
+  });
+
+  const best = topMost[0];
+  const s = score(best);
+  return (s.jdLike || s.applLike) ? best : null;
+}
 
 /* =========================
    0b) URL & list/grid helpers
    ========================= */
-
+// 1.Working codes to find JOb pages.
 function urlHints() {
   try {
-    const u = new URL(location.href);
+    //const u = new URL(location.href);
+    const u = safeURL(location.href) || { pathname: "", search: "" };
     const path = (u.pathname + ' ' + u.search).toLowerCase();
     let hits = 0;
     for (const k of URL_KEYWORDS) {
       const re = new RegExp(`(^|[\\W_])${k}([\\W_]|$)`, 'i');
-      if (re.test(path)) hits++;
+      if (re.test(path)){
+        hits++;
+        break;
+      }
     }
     return hits;
   } catch { return 0; }
@@ -88,30 +223,38 @@ function looksLikeGrid(root = document) {
   return cards.length > 12 && !hasApplySignals();
 }
 
-/* =========================
-   1) Tiered job-page detection
-   ========================= */
-
 function hasApplySignals() {
   const strongBtn = Array.from(document.querySelectorAll('a,button,input[type=submit]'))
-    .some(el => /apply(?:\s|$)|submit application|send application|begin application|start application|apply now/i
-      .test((el.textContent||el.value||'').trim()));
-  if (document.querySelector('input[type="file"], input[name*="resume" i], input[name*="cv" i]')) return true;
+      .some(el => /apply(?:\s|$)|submit application|send application|begin application|start application|apply now/i
+          .test((el.textContent||el.value||'').trim()));
+  if (strongBtn) return true;
+  if (document.querySelector('input[type="file"], input[name*="resume" i], input[name*="cv" i], input[name*="file" i]')) return true;
+  const labelish = /(first|last)\s*name|email|phone|address|resume|cv|linkedin|portfolio|cover\s*letter|location/i;
 
   const forms = Array.from(document.querySelectorAll('form'))
-    .filter(f => !/search|filter|newsletter|login|signin|sign in|signup|register/i.test(
-      (f.getAttribute('id')||'') + ' ' + (f.getAttribute('name')||'') + ' ' + (f.className||'')
-    ));
+      .filter(f => !/search|filter|newsletter/i.test(
+          (f.getAttribute('id')||'') + ' ' + (f.getAttribute('name')||'') + ' ' + (f.className||'')
+      ));
 
-  const labelish = /(first|last)\s*name|email|phone|address|resume|cv|linkedin|portfolio|cover\s*letter/i;
   const hasCandidateForm = forms.some(f => {
-    const inputs = f.querySelectorAll('input,select,textarea');
-    if (inputs.length < 2) return false;
-    const text = (f.innerText||'').slice(0, 1200);
-    return labelish.test(text);
+      const inputs = f.querySelectorAll('input,select,textarea');
+      if (inputs.length < 1) return false;
+      const text = (f.innerText||'').slice(0, 1200);
+      return labelish.test(text);
   });
+  
+  if (hasCandidateForm) return true;
+  const allCandidateInputs = document.querySelectorAll('input,select,textarea');
+  if (allCandidateInputs.length > 1) {
+      // Check the text surrounding the inputs for application labels
+      const inputsTextContext = (document.body?.innerText || '').slice(0, 4000); 
+      
+      if (labelish.test(inputsTextContext)) {
+          return true;
+      }
+  }
 
-  return strongBtn || hasCandidateForm;
+  return false; // If none of the four signals are met.
 }
 
 function liDetailRoot() {
@@ -129,10 +272,13 @@ const JD_SELECTORS = [
   '.show-more-less-html__markup',
   '#jobDescriptionText','.jobsearch-jobDescriptionText',
   '[data-automation-id="jobPostingDescription"]','[data-automation-id="richTextArea"]',
-  '#job-details','#jobdescSec','[data-cy="jobDescription"]','section[data-testid="jobDescription"]',
-  '.job-details__content','.job-description','[itemprop="description"]','.unstyled-html',
+  '#job-details','[aria-labelledby = "job-overview"]','#overview',
+  '#jobdescSec','[data-cy="jobDescription"]','section[data-testid="jobDescription"]',
+  '.job-details__content',
+  '.job-description','[itemprop="description"]','.unstyled-html',
   '#jobDescription','.jobDescription','.description__text',
-  '#iCIMS_JobContent','.iCIMS_JobDescription','.posting .section-wrapper','.posting .content','.posting .description',
+  '#iCIMS_JobContent','.iCIMS_JobDescription','.posting .section-wrapper','.posting .content',
+  '.posting .description',
 ];
 
 function jsonldHasJobPosting() {
@@ -151,11 +297,10 @@ function jsonldHasJobPosting() {
 
 function findJobTitleEl() {
   const sels = [
-    '[data-automation-id="jobPostingHeader"] h1',
     '.jobsearch-JobInfoHeader-title',
     '.top-card-layout__title','.jobs-unified-top-card__job-title','.jobs-unified-top-card__title',
     'h1[data-test-job-title]','[data-test-job-title]',
-    'h1[data-cy="jobTitle"]','[data-testid="jobTitle"]','.jobTitle','h1.job-title','h1'
+    'h1[data-cy="jobTitle"]','[data-testid="jobTitle"]','.jobTitle','h1.job-title','[data-automation-id="jobPostingHeader"] h1','h1'
   ];
   for (const s of sels) { const el = document.querySelector(s); if (el && (el.textContent||'').trim()) return el; }
   return null;
@@ -175,11 +320,13 @@ function hasJDContainers() {
 // NEW: detect auth/stepper/confirmation-like pages to suppress JD extraction
 function looksLikeAuthOrStepper() {
   // Workday stepper / auth / application wizard
-  const stepper = document.querySelector('[data-automation-id*="stepper" i], .wd-step, .progress-tracker, .application-steps, .wizardSteps, .stepper');
-  const authWords = /(create account|sign in|sign\s*up|authentication|verify email|password requirements)/i;
-  const hasAuthText = authWords.test((document.body.innerText || '').slice(0, 4000));
-  const heavyForm = document.querySelector('form') && document.querySelectorAll('input,select,textarea').length > 10;
-  return !!(stepper || (heavyForm && hasAuthText));
+  //const stepper = document.querySelector('[data-automation-id*="stepper" i], .wd-step, .progress-tracker, .application-steps, .wizardSteps, .stepper');
+  const authWords = /(create\s*account|log\s*in|sign\s*in|sign\s*up|authentication|verify\s*email|password)/i;
+  //const hasAuthText = authWords.test((document.body.innerText || '').slice(0, 4000));
+  const hasAuthUrl = authWords.test((location.href));
+  //const heavyForm = document.querySelector('form') && document.querySelectorAll('input,select,textarea').length > 10;
+  //return !!(stepper || (heavyForm && hasAuthText));
+  return !!(hasAuthUrl);
 }
 
 function isNegativeLinkedInPage() {
@@ -190,31 +337,26 @@ function isNegativeLinkedInPage() {
 
 /** Core detector (tiered) */
 async function detectJobPage() {
-  // Hard blocks: never show or keep icon
   if (isHardBlockedHost()) return { ok: false, tier: 'none', score: 0, allowUI: false, signals: { reason: 'hard_block' } };
-
-  // Soft negatives
   if (isSearchEngineHost() || isNegativeHost() || isNegativeLinkedInPage()) {
     return { ok: false, tier: 'none', score: 0, allowUI: false, signals: { reason: 'negative_host_or_path' } };
   }
 
-  const urlScore  = urlHints() > 0 ? 0.5 : 0;
-  const hostScore = isKnownJobHost() ? 0.8 : 0;
-  const atsScore  = isAtsHost() ? 0.3 : 0;
-
   const schemaFound = jsonldHasJobPosting();
-  const schemaScore = schemaFound ? 1.2 : 0;
-
   const titleEl = findJobTitleEl();
   const title = (titleEl?.textContent || '').trim();
   const detailsOk = titleLooksSane(title) || !!getCompanyName() || !!getLocationText();
-  const detailsScore = detailsOk ? 0.6 : 0;
 
-  const formScore = hasApplySignals() ? 0.8 : 0;
+  const schemaScore = schemaFound ? 1.2 : 0;
+  const hostScore   = isKnownJobHost() ? 0.8 : 0;
+  const formScore   = hasApplySignals() ? 0.8 : 0;
+  const detailsScore= detailsOk ? 0.6 : 0;
+  const urlScore    = urlHints() > 0 ? 0.8 : 0;
+  const atsScore    = isAtsHost() ? 0.3 : 0;
 
-  // Optional ML
+  // Optional ML (kept OFF). Keep mlBoost defined so later code never crashes.
   let mlBoost = 0;
-  try {
+  /* try {
     const root = isLinkedInHost() ? (liDetailRoot() || document) : document;
     const sample = (root.innerText || '').slice(0, 1600);
     const resp = await new Promise((resolve) => {
@@ -225,36 +367,38 @@ async function detectJobPage() {
       }, r => resolve(r || null));
     });
     if (resp && typeof resp.mlBoost === 'number') mlBoost = Math.max(0, Math.min(0.8, resp.mlBoost));
-  } catch {}
+  } catch {} */
 
   let score = urlScore + hostScore + atsScore + schemaScore + detailsScore + formScore + mlBoost;
 
-  const strongSignals = [
-    !!schemaFound,
-    !!titleLooksSane(title),
-    hasApplySignals(),
-    hasJDContainers()
-  ].filter(Boolean).length;
+  const s1 = !!schemaFound;
+  const s2 = !!titleLooksSane(title);
+  const s3 = isKnownJobHost();
+  const s4 = !!hasApplySignals();
+  const s5 = !!hasJDContainers();
+  const s6 = urlHints() > 0;
 
+  const strongSignals = [s1,s2,s3,s4,s5,s6].filter(Boolean).length;
   const gridOnly = looksLikeGrid(document) && strongSignals < 2;
 
-  let tier = 'none';
-  let ok = false;
+  let tier = 'none', ok = false;
 
   if (schemaFound) { ok = true; score = Math.max(score, 2.6); tier = 'high'; }
   else if (!gridOnly && strongSignals >= 2 && score >= 1.6) { ok = true; tier = 'medium'; }
   else if (!gridOnly && (urlScore + hostScore + atsScore) >= 1.0 && (detailsOk || hasJDContainers())) { ok = true; tier = 'low'; }
 
-  // UI allowed only if we have *real job content* and not just URL/host hints
   const allowUI = ok
     && (tier === 'medium' || tier === 'high')
-    && (schemaFound || hasJDContainers() || hasApplySignals());
+    && (schemaFound || hasJDContainers() || hasApplySignals() || urlHints());
+
+  const scoreNum = Number.isFinite(score) ? Number(score.toFixed(2)) : 0;
 
   return {
-    ok, tier, score: Number(score.toFixed(2)), allowUI,
+    ok, tier, score: scoreNum, allowUI,
     signals: { urlScore, hostScore, atsScore, schemaFound, detailsOk, formSignals: !!formScore, strongSignals, gridOnly, mlBoost }
   };
 }
+
 
 /* =========================
    2) JD extraction (Schema → DOM semantics → Keyword fallback)
@@ -293,7 +437,7 @@ function stripLabelishLines(raw) {
 function scoreJDText(t) {
   const L = t.length;
   if (L < 120 || L > 24000) return 0;
-  const kw = ["responsibilities","requirements","qualifications","skills","you’ll","you will","about the role","duties"];
+  const kw = ["responsibilities","requirements","nice to have","qualifications","skills","you’ll","you will","about the role","duties"];
   let k = 0; const lc = t.toLowerCase(); for (const w of kw) if (lc.includes(w)) k++;
   const lenBonus = Math.max(0, 10 - Math.abs((L - 3000) / 600));
   return k*5 + lenBonus;
@@ -395,9 +539,62 @@ function extractPageTextSansForms() {
     return cleanJDText(base);
   } catch { return ""; }
 }
+function waitForPageSettle({ urlQuietMs = 800, domQuietMs = 600, timeoutMs = 8000 } = {}) {
+  const startUrl = location.href;
+  let lastChange = performance.now();
 
+  const mo = new MutationObserver(() => { lastChange = performance.now(); });
+  try { mo.observe(document.documentElement, { childList: true, subtree: true }); } catch {}
+
+  const t0 = performance.now();
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const urlChanged = location.href !== startUrl;
+      const domIdle   = (now - lastChange) >= domQuietMs;
+      const urlIdle   = urlChanged ? ((now - lastChange) >= urlQuietMs) : true;
+
+      if ((domIdle && urlIdle) || (now - t0) > timeoutMs) {
+        clearInterval(timer);
+        try { mo.disconnect(); } catch {}
+        // give layout a tick
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      }
+    }, 120);
+  });
+}
+function waitForDomStable({ timeoutMs = 2500, quietMs = 180 } = {}) {
+  return new Promise(resolve => {
+    let timer = setTimeout(done, timeoutMs);
+    let idle;
+    const mo = new MutationObserver(() => {
+      clearTimeout(idle);
+      idle = setTimeout(done, quietMs);
+    });
+    mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+    function done(){
+      mo.disconnect();
+      clearTimeout(timer);
+      resolve();
+    }
+  });
+}
 async function getJobDescriptionText() {
+  waitForPageSettle({ urlQuietMs: 800, domQuietMs: 600, timeoutMs: 8000 });
   // 1B) HARD GUARD: only allow JD on real job pages
+  // Only parse where we intend to (ATS iframe when present; else fallback top)
+  if (!ROLE_PARSE) return { text: "", anchor: null, source: "none" };
+  // early bailout in top window
+  if (IS_TOP_WINDOW && pageHasAtsIframe()) {
+    //console.log('[JD] ATS iframe detected — skip JD scan in top window');
+    log('[JD] ATS iframe detected — skip JD scan in top window');
+    return { text: "", anchor: null, source: "skipped_ats_iframe" };
+    // you can set a flag so the rest of your script short-circuits
+    //window.__JOB_AID_SKIP_JD__ = true;
+  }
+  // We are either inside the iframe, or on a page without an ATS iframe.
+  // If you want to start *after* the JD block renders, add a tiny stabilizer:
+  waitForDomStable({ timeoutMs: 2500, quietMs: 180 });
   try {
     const det = await detectJobPage();
     if (!det.allowUI) return { text: "", anchor: null, source: "none" };
@@ -412,9 +609,10 @@ async function getJobDescriptionText() {
     const merged = mergeCandidateTexts(jsonld, 24000);
     if (merged && merged.length > 120) return { text: merged, anchor: document.body, source: 'jsonld' };
   }
-
+  console.log('getjd func,after collecting jsonld:',jsonld);
   // Stage 2: Semantic DOM (selectors + headings)
   let candidates = [...collectJDBySelectors(), ...collectJDByHeadings()];
+  console.log('getjd func,after collecting seelctors and heading:',candidates);
   if (candidates.length) {
     candidates.forEach(c => c.score = scoreJDText(c.text));
     let good = candidates.filter(c => c.score >= 3);
@@ -531,7 +729,6 @@ function getLocationText() {
     // Indeed (new inline header)
     '[data-testid="inlineHeader-companyLocation"]',
     '[data-testid="companyLocation"]',
-
     // LinkedIn & generic fallbacks
     '[data-automation-id*="jobLocation"]',
     '.jobs-unified-top-card__job-insight .jobs-unified-top-card__bullet',
@@ -597,8 +794,15 @@ function getCompanyLogoUrl() {
     if (liLogo) return liLogo;
     return ''; // avoid LinkedIn favicon
   }
-  const sels = ['img[alt*="logo" i]','.company-logo img','.artdeco-entity-image img','.iCIMS_Logo img','img[aria-label*="logo" i]'];
-  for (const sel of sels) { const src = document.querySelector(sel)?.getAttribute('src'); if (src) return absUrl(src); }
+  const sels = ['img[alt*="logo" i]','.company-logo img','.artdeco-entity-image img','.iCIMS_Logo img','.image-container img','img[aria-label*="logo" i]'];
+  //for (const sel of sels) { const src = document.querySelector(sel)?.getAttribute('src'); if (src) return absUrl(src); }
+  for (const sel of sels) {
+  const src = document.querySelector(sel)?.getAttribute('src');
+    if (src && typeof src === 'string') {
+     const a = absUrl(src);
+     if (a) return a;
+    }
+}
   const og = document.querySelector('meta[property="og:image"]')?.content;
   if (og) return absUrl(og);
   return bestIcon() || absUrl('/favicon.ico');
@@ -617,9 +821,16 @@ function getJobTitleStrict() {
 /* =========================
    4) Icon / Banner (UI gates only for MEDIUM/HIGH)
    ========================= */
-
+const isIcimsHost = /(?:^|\.)icims\.com$/i.test(location.hostname);
+/*
 function showIcon() {
+  // acquire per-origin+path lock; if another same-origin frame owns UI, bail
+  if(isIcimsHost && !acquireUiLock() ){
+    return;
+  }
+  //if (!acquireUiLock()) return;
   if (document.getElementById('jobAidIcon')) return;
+
   const iconUrl = chrome.runtime.getURL('images/icon.jpeg');
   const icon = document.createElement('img');
   icon.src = iconUrl; icon.id = 'jobAidIcon';
@@ -653,32 +864,99 @@ function showIcon() {
   try { window.__JobAidIconShown = true; } catch {}
   try { if (typeof window.initATSWatchers === 'function') window.initATSWatchers(); } catch {}
 }
+*/
+function showIcon() {
+  // Only the top window owns UI
+  if (!ROLE_UI) return;
+
+  // Acquire per-origin+path lock to avoid double icons across same-origin iframes
+  //if (!acquireUiLock()) return;
+
+  if (document.getElementById('jobAidIcon')) return;
+
+  const iconUrl = chrome.runtime.getURL('images/icon.jpeg');
+  const icon = document.createElement('img');
+  icon.src = iconUrl; icon.id = 'jobAidIcon';
+  Object.assign(icon.style, {
+    position:'fixed', left:'20px', top:'20px', width:'48px', height:'48px',
+    zIndex: '2147483647', cursor:'pointer', userSelect:'none', pointerEvents:'auto',
+  });
+  let isDragging=false, moved=false, offsetX=0, offsetY=0;
+  icon.addEventListener('pointerdown', e => {
+    isDragging = true; moved = false;
+    offsetX = e.clientX - icon.offsetLeft; offsetY = e.clientY - icon.offsetTop;
+    icon.setPointerCapture(e.pointerId);
+    icon.style.cursor = 'grabbing'; e.preventDefault();
+  });
+  icon.addEventListener('pointermove', e => {
+    if (!isDragging) return; moved = true;
+    let x = e.clientX - offsetX; let y = e.clientY - offsetY;
+    const maxX = window.innerWidth - icon.offsetWidth; const maxY = window.innerHeight - icon.offsetHeight;
+    x = clamp(x, 0, maxX); y = clamp(y, 0, maxY);
+    icon.style.left = x + 'px'; icon.style.top = y + 'px';
+  });
+  icon.addEventListener('pointerup', e => {
+    if (!isDragging) return; isDragging = false;
+    icon.releasePointerCapture(e.pointerId); icon.style.cursor = 'pointer';
+  });
+  icon.addEventListener('click', e => {
+    if (moved) { e.stopImmediatePropagation(); return; }
+    chrome.runtime.sendMessage({ action: 'openPopup' });
+  });
+  document.body.appendChild(icon);
+  try { window.__JobAidIconShown = true; } catch {}
+  try { if (typeof window.initATSWatchers === 'function') window.initATSWatchers(); } catch {}
+}
+/*
 function removeIcon() {
   const icon = document.getElementById('jobAidIcon');
   if (icon) icon.remove();
   try { window.__JobAidIconShown = false; } catch {}
+  if(isIcimsHost){
+    releaseUiLock(); // release owner so another frame (if any) may take over when appropriate
+  }
+}*/
+function removeIcon() {
+  const icon = document.getElementById('jobAidIcon');
+  if (icon) icon.remove();
+  try { window.__JobAidIconShown = false; } catch {}
+  // Always release the UI lock if we own it
+  //releaseUiLock();
 }
 
 function removeBanner() { const host = document.getElementById('jobAidSkillBannerHost'); if (host) host.remove(); }
 
 /* ==== skills banner kept as-is except gated by allowUI ==== */
 function displayMatchingPerecentage(pct, matched) {
+    
+  if (!ROLE_PARSE) return; // banner only in the parsing context
+
   if (!Array.isArray(allSkills) || allSkills.length === 0) return;
 
   const hostId = 'jobAidSkillBannerHost';
   let host = document.getElementById(hostId);
+
+  // choose one primary container to own the banner
+  const primary = selectPrimaryJobBlock();
+  const insertRoot = primary || document.querySelector('main') || document.body;
+
+  // find title within the chosen root (not the whole document)
+  const titleSel = [
+    "[data-automation-id='jobPostingHeader'] h1",".jobsearch-JobInfoHeader-title",".top-card-layout__title",
+    ".jobs-unified-top-card__job-title",".jobs-unified-top-card__title","h1[data-test-job-title]",
+    "h1[data-cy='jobTitle']","[data-testid='jobTitle']", ".jobTitle","h1.job-title","h1"
+  ];
+  let titleEl = null;
+  for (const s of titleSel) { const el = insertRoot.querySelector(s); if (el) { titleEl = el; break; } }
+
+  // if an existing banner is mounted outside our chosen root (duplication scenario), remove & recreate
+  if (host && !insertRoot.contains(host)) { try { host.remove(); } catch {} host = null; }
+
   if (!host) {
     host = document.createElement('div'); host.id = hostId;
 
-    const titleSel = [
-      "[data-automation-id='jobPostingHeader'] h1",".jobsearch-JobInfoHeader-title",".top-card-layout__title",
-      ".jobs-unified-top-card__job-title",".jobs-unified-top-card__title","h1[data-test-job-title]",
-      "h1[data-cy='jobTitle']","[data-testid='jobTitle']", ".jobTitle","h1.job-title","h1"
-    ];
-    let titleEl = null;
-    for (const s of titleSel) { const el = document.querySelector(s); if (el) { titleEl = el; break; } }
     if (titleEl?.parentElement) titleEl.parentElement.insertBefore(host, titleEl.nextSibling);
-    else (document.querySelector('main') || document.body).insertBefore(host, (document.querySelector('main')||document.body).firstChild);
+    else insertRoot.insertBefore(host, insertRoot.firstChild || null);
 
     const shadow = host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
@@ -707,6 +985,10 @@ function displayMatchingPerecentage(pct, matched) {
       </div>
     `;
     shadow.appendChild(style); shadow.appendChild(root);
+  } else if (!host.isConnected) {
+    // rare SPA remounts
+    if (titleEl?.parentElement) titleEl.parentElement.insertBefore(host, titleEl.nextSibling);
+    else insertRoot.insertBefore(host, insertRoot.firstChild || null);
   }
 
   const scoreEl = host.shadowRoot.getElementById('score');
@@ -723,8 +1005,11 @@ function displayMatchingPerecentage(pct, matched) {
   matchLabel.textContent = `Matched (${matched.length}/${jd.length})`;
   unmatchLabel.textContent = `Unmatched (${unmatched.length}/${jd.length})`;
 
-  matchList.innerHTML = ''; matched.slice(0, 120).forEach(s => { const p = document.createElement('span'); p.className = 'pill'; p.textContent = s; matchList.appendChild(p); });
-  unmatchList.innerHTML = ''; unmatched.slice(0, 120).forEach(s => { const p = document.createElement('span'); p.className = 'pill miss'; p.textContent = s; unmatchList.appendChild(p); });
+  matchList.innerHTML = '';
+  matched.slice(0, 120).forEach(s => { const p = document.createElement('span'); p.className = 'pill'; p.textContent = s; matchList.appendChild(p); });
+
+  unmatchList.innerHTML = '';
+  unmatched.slice(0, 120).forEach(s => { const p = document.createElement('span'); p.className = 'pill miss'; p.textContent = s; unmatchList.appendChild(p); });
 }
 
 function expandLinkedInDescription() {
@@ -736,7 +1021,7 @@ function expandLinkedInDescription() {
 /* =========================
    5) LinkedIn active-card helpers
    ========================= */
-
+// try to get an id from html structure of Linkedin present page
 function findLinkedInJobIdFromDetail() {
   const a = Array.from(document.querySelectorAll('a[href*="/jobs/view/"]')).find(x => /\/jobs\/view\/\d+/.test(x.getAttribute('href')||''));
   const m = a?.getAttribute('href')?.match(/\/jobs\/view\/(\d+)/);
@@ -746,7 +1031,7 @@ function findLinkedInJobIdFromDetail() {
   const id = el?.getAttribute('data-job-id') || el?.getAttribute('data-job-id-view') || el?.getAttribute('data-job-id-saved');
   return id || '';
 }
-
+//tries to get an active id from active card, if not from url, if not from html.
 function getActiveCardId() {
   const liActive =
     document.querySelector(
@@ -756,7 +1041,8 @@ function getActiveCardId() {
     ) || document.querySelector('[data-occludable-job-id]');
   if (liActive?.dataset?.occludableJobId) return `LI:${liActive.dataset.occludableJobId}`;
 
-  const urlJobId = new URL(location.href).searchParams.get('currentJobId');
+  //const urlJobId = new URL(location.href).searchParams.get('currentJobId');
+  const urlJobId = (safeURL(location.href)?.searchParams || new URLSearchParams()).get('currentJobId');
   if (urlJobId) return `LI:${urlJobId}`;
 
   const detailId = findLinkedInJobIdFromDetail();
@@ -813,7 +1099,7 @@ function getLinkedInActiveCardMeta() {
   }
 
   const  companyName = getLinkedInCompanyName();
-  console.log('company Name:', companyName);
+ //console.log('company Name:', companyName);
   function getLinkedInLocation(root = document) {
     // container with multiple classes → dot-chain them
     const container = root.querySelector(
@@ -852,7 +1138,8 @@ function getLinkedInActiveCardMeta() {
     return '';
   }
   const locationText = getLinkedInLocation();
-  const u = new URL(window.location.href);
+  //const u = new URL(window.location.href);
+  const u = safeURL(window.location.href) || { hostname: location.hostname, pathname: location.pathname, origin: location.origin };
   let jobId = u.searchParams.get('currentJobId') || '';
   if (!jobId) {
     const selected = document.querySelector('.jobs-search-results__list-item[aria-selected="true"]');
@@ -869,9 +1156,132 @@ function getLinkedInActiveCardMeta() {
   lastActiveLIMeta = meta;
   return meta;
 }
+/* =========================
+   5b) Generic company/ATS list → active-card helpers
+   ========================= */
+
+function findGenericJobListContainers(root = document) {
+  const sels = [
+    '[role="list"], [role="listbox"]',
+    '.jobs, .jobs-list, .job-list, .posting-list, .positions-list, .careers-list',
+    '.gh-application, .lever, .ashby, .workday, .icims, .smartrecruiters, .workable, .bamboohr, .successfactors',
+    '.search-results, .results-list, .positions, .open-roles'
+  ];
+  const lists = new Set();
+  sels.forEach(sel => document.querySelectorAll(sel).forEach(el => lists.add(el)));
+  if (lists.size === 0) {
+    const many = document.querySelectorAll('li a[href*="job"], li a[href*="careers"], li a[href*="jobs"], li a[href*="/posting"], .job-card a, .posting a');
+    if (many.length >= 6) lists.add(many[0].closest('ul,ol,section,div') || document.body);
+  }
+  return Array.from(lists);
+}
+
+function findGenericJobCards(lists = findGenericJobListContainers()) {
+  const cards = [];
+  const linkSel = [
+    'a[href*="jobs/"]','a[href*="/job/"]','a[href*="/careers/"]','a[href*="/posting"]','a[href*="lever.co"]',
+    'a[href*="greenhouse.io"]','a[href*="myworkdayjobs"]','a[href*="icims.com"]','a[href*="ashbyhq.com"]',
+    'a[href*="smartrecruiters.com"]','a[href*="apply.workable.com"]','a[href*="bamboohr.com"]','a[href*="successfactors"]'
+  ].join(',');
+  for (const list of lists) {
+    const candidates = list.querySelectorAll('[role="option"], [role="listitem"], li, .job-card, .posting, .position, .result');
+    candidates.forEach(item => {
+      let a = item.querySelector(linkSel) || item.querySelector('a[href]');
+      if (!a || !a.href) return;
+      if (!isVisible(item)) return;
+      cards.push({ item, link: a });
+    });
+  }
+  const seen = new Set(); const out = [];
+  for (const c of cards) {
+    const key = c.link.href.split('#')[0];
+    if (seen.has(key)) continue;
+    seen.add(key); out.push(c);
+  }
+  return out;
+}
+
+function isSelectedCard(el) {
+  if (!el) return false;
+  // Strong explicit states
+  if (el.matches?.('[aria-selected="true"], [aria-current="true"], [aria-current="page"], .is-active, .active, .selected, .is-selected, .current')) return true;
+  // Some lists mark the active item by role=option + aria-activedescendant on the listbox
+  const listbox = el.closest?.('[role="listbox"], [role="list"]');
+  const act = listbox?.getAttribute?.('aria-activedescendant');
+  if (act) {
+    const activeEl = document.getElementById(act);
+    if (activeEl && (activeEl === el || activeEl.closest?.('*') === el)) return true;
+  }
+
+  // Some cards toggle expansion when selected
+  const exp = el.getAttribute?.('aria-expanded');
+  if (exp && /^(true|1)$/i.test(exp)) return true;
+
+  return false;
+}
+
+function extractMetaFromCard(item, link) {
+  //const heading = item.querySelector('h1,h2,h3,h4,[role="heading"]');
+  const title = (findJobTitleEl()?.textContent || '').trim() //|| sanitize((link?.textContent || heading?.textContent || '').trim());
+  //const locEl = item.querySelector('[data-test*="location" i], [data-testid*="location" i], .location, [class*="location" i]');
+  const location = (getLocationText() || '').trim()//sanitize((locEl?.textContent || '').replace(/\s*[•·]\s*/g,' • ').trim());
+  const company = getCompanyName();
+  const img = item.querySelector('img[alt*="logo" i], .company-logo img, img');
+  const logoUrl = img?.src ? absUrl(img.src) : getCompanyLogoUrl();
+  //const url = absUrl(link?.href || '');
+  const url = absUrl((link && typeof link.href === 'string') ? link.href : '');
+  return { title, company, location, logoUrl, url };
+}
+function getGenericActiveCardMeta() {
+  const cards = findGenericJobCards();
+  if (cards.length === 0) return null;
+
+  // 1) explicit selection
+  let pick = cards.find(c => isSelectedCard(c.item));
+  if (!pick) {
+    // 2) focus inside the item (keyboard navigation)
+    pick = cards.find(c => c.item.matches(':focus-within'));
+  }
+  if (!pick) {
+    // 3) item nearest to viewport center (best-effort for two-pane layouts)
+    const nodes = cards.map(c => c.item);
+    const best = closestToViewportCenter(nodes);
+    pick = cards.find(c => c.item === best) || null;
+  }
+  if (!pick) {
+    // 4) only if the list is tiny, allow index 0 as a last resort
+    if (cards.length <= 2) pick = cards[0];
+  }
+  if (!pick) return null;
+
+  const meta = extractMetaFromCard(pick.item, pick.link);
+  if (!(meta.title || meta.url)) return null;
+  return { ...meta, atsVendor: 'company' };
+}
+
+
+function bindGenericListClicks() {
+  if (window.__JobAidGenericListBound__) return;
+  window.__JobAidGenericListBound__ = true;
+  document.addEventListener('click', (e) => {
+    const a = e.target?.closest?.('a[href]');
+    if (!a) return;
+    const li = a.closest?.('[role="option"], [role="listitem"], li, .job-card, .posting, .position, .result');
+    if (!li) return;
+    setTimeout(() => {
+      try {
+        const meta = getGenericActiveCardMeta();
+        if (meta && (meta.title || meta.company)) {
+          chrome.runtime.sendMessage({ action: 'updateJobContext', canonical: location.href, meta, confidence: 0.75 });
+          lastActiveGenericMeta = meta;
+        }
+      } catch {}
+    }, 120);
+  }, { capture: true, passive: true });
+}
 
 /* =========================
-   6) Stable Job Key
+   6) Stable Job Key for LinkedIn
    ========================= */
 
 async function computeStableJobKey() {
@@ -880,12 +1290,13 @@ async function computeStableJobKey() {
     const resp = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: 'canonicalizeUrl', url: location.href }, resolve);
     });
-    const canonical = resp?.canonical || '';
+    const canonical = resp?.canonical || location.href;
     if (canonical) return canonical; // use canonical URL as the job key
   } catch {}
 
   // Fallback: title+company+activeId OR pathname hashed (stable enough per flow)
-  const u = new URL(window.location.href);
+  //const u = new URL(window.location.href);
+  const u = safeURL(window.location.href);
   const activeId = getActiveCardId();
   const title = (findJobTitleEl()?.textContent || '').trim();
   const company = (getCompanyName() || '').trim();
@@ -893,31 +1304,91 @@ async function computeStableJobKey() {
   return raw || u.origin + u.pathname;
 }
 
+// ---- Canonical scoring (40/30/30) ----
+function canonicalScore({ hasApply, hasTCL, hasJD }) {
+  const w = { apply: 0.4, tcl: 0.3, jd: 0.3 };
+  let s = 0;
+  if (hasApply) s += w.apply;
+  if (hasTCL) s += w.tcl;
+  if (hasJD) s += w.jd;
+  return s;
+}
+function hasTitleCompanyLocation() {
+  const t = (findJobTitleEl()?.textContent || '').trim();
+  const c = (getCompanyName() || '').trim();
+  const l = (getLocationText() || '').trim();
+  return !!(t && c && l);
+}
+// ---- Journey: freeze canonical snapshot when Apply/Interested is clicked
+(function initApplyClickMonitor(){
+  const APPLY_RX = /(apply|i['’]?\s*m\s+interested|begin application|start application)/i;
+  document.addEventListener('click', async (e) => {
+    const el = e.target?.closest('a,button,input[type=submit]'); if (!el) return;
+    const label = (el.textContent || el.value || '').trim();
+    if (!APPLY_RX.test(label)) return;
+
+    try {
+      const hasApply = true;
+      const hasTCL = hasTitleCompanyLocation();
+      const { text: jdText } = await getJobDescriptionText();
+      const hasJD = !!(jdText && jdText.length > 120);
+      const score = canonicalScore({ hasApply, hasTCL, hasJD });
+
+      const snapshot = {
+        title: getJobTitleStrict(),
+        company: getCompanyName(),
+        location: getLocationText(),
+        logoUrl: getCompanyLogoUrl(),
+        url: location.href,
+        score
+      };
+      chrome.runtime.sendMessage({ action: 'journeyStart', snapshot });
+      // Tell bg to lock first_canonical to the very first detail page
+      try { chrome.runtime.sendMessage({ action: 'noteFirstJobUrl', url: location.href }); } catch {}
+    } catch {}
+  }, { capture: true, passive: true });
+})();
+
+const bindPageToJourney = debounce(async () => {
+  try {
+    const hasApply = hasApplySignals();
+    const hasTCL = hasTitleCompanyLocation();
+    const { text: jdText } = await getJobDescriptionText();
+    const score = canonicalScore({ hasApply, hasTCL, hasJD: !!(jdText && jdText.length > 120) });
+    chrome.runtime.sendMessage({ action: 'journeyBindCanonical', canonical: location.href, host: location.hostname, score });
+  } catch {}
+}, 250);
+//The bindPageToJourney function is triggered by three different event listeners
+window.addEventListener('load', bindPageToJourney, { once: true }); // when full page loads
+window.addEventListener('popstate', bindPageToJourney, { passive: true }); // chrome forward and back arrows
+window.addEventListener('hashchange', bindPageToJourney, { passive: true }); // In url, when the text after # is changed.
+
 /* =========================
-   7) Scan loop (ties together detection + UI + JD send)
+   7) Scan loop (ties together job page detection + icon UI + JD send)
    ========================= */
 
 async function scan() {
+  //console.log('scan function intitated');
+  // Don’t waste work in background tabs
+  if (document.visibilityState !== 'visible') return;
   // Early cleanup if hard-blocked (e.g., ChatGPT)
   if (isHardBlockedHost()) {
-    removeIcon(); removeBanner();
+    removeIcon(); 
+    removeBanner();
     jobApplicationDetected = false;
     currentJobKey = ""; lastJDHash = ""; lastActiveLIMeta = null;
     return;
   }
-
   const det = await detectJobPage();
-
   // Telemetry for QA
-  try { chrome.runtime.sendMessage({ action: 'jobDetection', detection: det, url: location.href }); } catch {}
-
+  //try { chrome.runtime.sendMessage({ action: 'jobDetection', detection: det, url: location.href }); } catch {}
   if (!det.ok) {
-    removeIcon(); removeBanner();
+    removeIcon(); 
+    removeBanner();
     jobApplicationDetected = false;
     currentJobKey = ""; lastJDHash = ""; lastActiveLIMeta = null;
     return;
   }
-
   const newKey = await computeStableJobKey();
   if (newKey && newKey !== currentJobKey) {
     currentJobKey = newKey;
@@ -926,9 +1397,9 @@ async function scan() {
   }
 
   if (det.allowUI && !jobApplicationDetected) {
-    showIcon(); jobApplicationDetected = true;
-    // Tell bg to lock first_canonical to the very first detail page
-    try { chrome.runtime.sendMessage({ action: 'noteFirstJobUrl', url: location.href }); } catch {}
+    showIcon(); 
+    jobApplicationDetected = true;
+
   }
   if (!det.allowUI) { removeIcon(); }
 
@@ -943,25 +1414,39 @@ async function scan() {
     }
   } 
   else {
-    const meta = {
-      title: getJobTitleStrict(),
-      company: getCompanyName(),
-      location: getLocationText(),
-      logoUrl: getCompanyLogoUrl(),
-      url: location.href,
-      jobKey: currentJobKey
-    };
-    pushJobContext(meta, { confidence: det.tier === 'high' ? 1.0 : 0.7 });
+    // Prefer active card meta from company/ATS list if present; fall back to page-level
+    bindGenericListClicks();
+    const generic = getGenericActiveCardMeta();
+    if (generic && (generic.title || generic.company)) {
+      lastActiveGenericMeta = generic;
+      pushJobContext({ ...generic, jobKey: currentJobKey }, { confidence: det.tier === 'high' ? 1.0 : 0.7 });
+    } 
+    else {
+      const meta = {
+        title: getJobTitleStrict(),
+        company: getCompanyName(),
+        location: getLocationText(),
+        logoUrl: getCompanyLogoUrl(),
+        url: location.href,
+        jobKey: currentJobKey
+      };
+      pushJobContext(meta, { confidence: det.tier === 'high' ? 1.0 : 0.7 });
+    }
   }
 
+
   // Extract JD (Schema → DOM → Fallback) — guarded in getJobDescriptionText()
-  const { text, anchor, source } = await getJobDescriptionText();
-  if (text && text.length > 120) {
-    jdAnchorEl = anchor || null;
-    const h = hash(text);
-    if (h !== lastJDHash) {
-      lastJDHash = h;
-      chrome.runtime.sendMessage({ action: "jdText", text, jobKey: currentJobKey, source, tier: det.tier });
+  const urlKey = location.href.split('#')[0];
+  if (!_didFullJDForUrl.has(urlKey)) {
+    const { text, anchor, source } = await getJobDescriptionText();
+    if (text && text.length > 120) {
+      _didFullJDForUrl.add(urlKey);
+      jdAnchorEl = anchor || null;
+      const h = hash(text);
+      if (h !== lastJDHash) {
+        lastJDHash = h;
+        chrome.runtime.sendMessage({ action: "jdText", text, jobKey: currentJobKey, source, tier: det.tier });
+      }
     }
   }
 }
@@ -1018,7 +1503,9 @@ runDetection();
 
 // Watch SPA URL/state changes
 (function patchHistory() {
+
   const p = history.pushState, r = history.replaceState;
+  //push used to add new job tab url, replace replaces the existing job url( changes)
   history.pushState = function(){ const x = p.apply(this, arguments); runDetection(); return x; };
   history.replaceState = function(){ const x = r.apply(this, arguments); runDetection(); return x; };
   window.addEventListener('popstate', runDetection, {passive:true});
@@ -1027,6 +1514,11 @@ runDetection();
 
 // Observe DOM (single debounced runner)
 new MutationObserver(() => runDetection()).observe(document, { childList: true, subtree: true });
+// Refresh detection when keyboard focus moves inside the list (important for ATS panes)
+document.addEventListener('focusin', () => runDetection(), { capture: true, passive: true });
+// Optional: in heavy two-pane lists, the visible/center card changes on scroll
+window.addEventListener('scroll', () => runDetection(), { passive: true });
+
 
 // Keep fresh when tab becomes visible / on load
 window.addEventListener('load', runDetection);
@@ -1041,58 +1533,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => { try{await runDetectionNow(); sendResponse?.({ ok: true, jobKey: currentJobKey, url: location.href });} catch(e){sendResponse?.({ ok: false, error: String(e?.message || e), url: location.href });}})();
     return true;
   }
-
-  if (request.action === 'displayPercentage' && typeof request.percentage === 'number') {
-    // Only render banner if we’re on a MEDIUM/HIGH page (icon present implies allowUI)
-    if (!document.getElementById('jobAidIcon')) return true;
-    matchedWords = request.matchedWords || [];
-    percentage = request.percentage || 0;
-    if (Array.isArray(request.allSkills)) allSkills = request.allSkills;
-    displayMatchingPerecentage(percentage, matchedWords);
-    sendResponse?.({ status: 'success' });
-    return true;
-  }
-
-  if (request.action === 'openSkillsPanel') {
-    if (jdAnchorEl) {
-      jdAnchorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      jdAnchorEl.style.transition = 'box-shadow 0.6s ease';
-      const prev = jdAnchorEl.style.boxShadow;
-      jdAnchorEl.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.35)';
-      setTimeout(() => { jdAnchorEl.style.boxShadow = prev || 'none'; }, 1200);
-      sendResponse?.({ ok: true, where: 'jd' });
-      return true;
-    }
-    const host = document.getElementById('jobAidSkillBannerHost');
-    if (host) { host.scrollIntoView({ behavior: 'smooth', block: 'center' }); sendResponse?.({ ok: true, where: 'banner' }); }
-    else { sendResponse?.({ ok: false, reason: 'no_anchor' }); }
-    return true;
-  }
-
-  if (request.action === 'getSkillMatchState') {
-    const meta = { url: location.href, title: getJobTitleStrict(), company: getCompanyName(), location: getLocationText(), logoUrl: getCompanyLogoUrl() };
-    sendResponse?.({ percentage, matchedWords, allSkills, meta, jobKey: currentJobKey });
-    return true;
-  }
-
-  if (request.action === 'getActiveLinkedInMeta') {
-    const fresh = isLinkedInHost() ? (getLinkedInActiveCardMeta() || lastActiveLIMeta) : null;
-    sendResponse?.(fresh || null);
-    return true;
-  }
-
-  if (request.action === 'appliedJobSaved') {
-    if (request.ok) {
-      const t = request?.data?.title || request.title || 'Job';
-      const c = request?.data?.company || request.company || '';
-      showToast('Added into your applied job list', { sub: c ? `${t} · ${c}` : t, success: true, ttl: 3800 });
-    } else {
-      showToast('Couldn’t mark as applied', { sub: request.error || 'Try again later', success: false, ttl: 5200 });
-    }
-    sendResponse?.({ ok: true });
-    return true;
-  }
-
+  
   if (request.action === 'getDetectionState') {
     // on-demand quick read (re-run a lightweight detect without side-effects)
     (async () => {
@@ -1108,54 +1549,119 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   }
-});
-
-
-/* =========================
-   9) Toast
-   ========================= */
-
-function showToast(message, { sub = '', success = true, ttl = 3200 } = {}) {
-  const hostId = 'jobAidToastHost';
-  let host = document.getElementById(hostId);
-  if (!host) {
-    host = document.createElement('div');
-    host.id = hostId;
-    host.style.position = 'fixed';
-    host.style.zIndex = '2147483647';
-    host.style.inset = 'auto 20px 20px auto';
-    document.body.appendChild(host);
-    const shadow = host.attachShadow({ mode: 'open' });
-    const style = document.createElement('style');
-    style.textContent = `
-      .wrap { display: flex; flex-direction: column; gap: 8px; }
-      .toast { min-width: 260px; max-width: 360px; background: #fff; border-radius: 12px;
-        box-shadow: 0 6px 22px rgba(0,0,0,0.18); padding: 12px 14px; font: 14px/1.35 system-ui;
-        border: 1px solid #e5e7eb; opacity: 0; transform: translateY(8px);
-        transition: opacity .18s ease, transform .18s ease; }
-      .toast.show { opacity: 1; transform: translateY(0); }
-      .title { font-weight: 700; color: #111827; display:flex; align-items:center; gap:8px; }
-      .ok { width:18px; height:18px; border-radius:9999px; background:#22c55e; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-size:12px; }
-      .err { width:18px; height:18px; border-radius:9999px; background:#ef4444; display:inline-flex; align-items:center; justify-content:center; color:#fff; font-size:12px; }
-      .sub { margin-top: 6px; color:#374151; font-size:12px; }
-      .fadeout { opacity: 0 !important; transform: translateY(8px) !important; }
-    `;
-    const wrap = document.createElement('div'); wrap.className = 'wrap';
-    shadow.appendChild(style); shadow.appendChild(wrap);
-    host._wrap = wrap;
+  if (request.action === 'hasJD') {
+    (async () => {
+      const { text } = await getJobDescriptionText();
+      sendResponse({ ok: !!(text && text.length > 120) });
+    })();
+    return true;
   }
-  const t = document.createElement('div');
-  t.className = 'toast';
-  t.innerHTML = `
-    <div class="title">
-      <span class="${success ? 'ok' : 'err'}">${success ? '✓' : '!'}</span>
-      <span>${message}</span>
-    </div>
-    ${sub ? `<div class="sub">${sub}</div>` : ''}
-  `;
-  host._wrap.appendChild(t);
-  requestAnimationFrame(() => t.classList.add('show'));
-  const kill = () => { t.classList.add('fadeout'); setTimeout(() => t.remove(), 220); };
-  setTimeout(kill, ttl);
-  return { close: kill };
-}
+  if (request.action === 'getCanonicalScore') {
+    (async () => {
+      const hasApply = hasApplySignals();
+      const hasTCL = hasTitleCompanyLocation();
+      const { text: jdText } = await getJobDescriptionText();
+      const score = canonicalScore({ hasApply, hasTCL, hasJD: !!(jdText && jdText.length > 120) });
+      sendResponse({
+        score,
+        title: getJobTitleStrict(),
+        company: getCompanyName(),
+        location: getLocationText(),
+        logoUrl: getCompanyLogoUrl(),
+        url: location.href
+      });
+    })();
+    return true;
+  }
+
+  if (request.action === 'displayPercentage' && typeof request.percentage === 'number') {
+    matchedWords = request.matchedWords || [];
+    percentage = request.percentage || 0;
+    if (Array.isArray(request.allSkills)) allSkills = request.allSkills;
+    // Only render banner if we’re on a MEDIUM/HIGH page (icon present implies allowUI)
+    //if (!document.getElementById('jobAidIcon')) return true;
+    // IMPORTANT: never return true without responding
+    if (!document.getElementById('jobAidIcon')) {
+      sendResponse?.({ status: 'no_ui' }); // <— respond
+      return; // sync
+    }
+    displayMatchingPerecentage(percentage, matchedWords);
+    sendResponse?.({ status: 'success' });
+    return; // true;
+  }
+  /*
+  if (request.action === 'openSkillsPanel') {
+    if (jdAnchorEl) {
+      jdAnchorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      jdAnchorEl.style.transition = 'box-shadow 0.6s ease';
+      const prev = jdAnchorEl.style.boxShadow;
+      jdAnchorEl.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.35)';
+      setTimeout(() => { jdAnchorEl.style.boxShadow = prev || 'none'; }, 1200);
+      sendResponse?.({ ok: true, where: 'jd' });
+      return; //true;
+    }
+    const host = document.getElementById('jobAidSkillBannerHost');
+    if (host) { host.scrollIntoView({ behavior: 'smooth', block: 'center' }); sendResponse?.({ ok: true, where: 'banner' }); }
+    else { sendResponse?.({ ok: false, reason: 'no_anchor' }); }
+    return;// true;
+  }*/
+  if (request.action === 'openSkillsPanel'){
+    const host = document.getElementById('jobAidSkillBannerHost');
+    // 💡 ADD THIS LOGGING:
+    //console.log('openSkillsPanel received. jdAnchorEl status:', !!jdAnchorEl); 
+    //console.log('openSkillsPanel received. host status:', !!host);
+    if (jdAnchorEl) {
+      // 1) Reply immediately so popup sees ok:true.
+      sendResponse?.({ ok: true, where: 'jd' });
+      // 2) Do the visual work asynchronously.
+      setTimeout(() => {
+        try {
+          jdAnchorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          jdAnchorEl.style.transition = 'box-shadow 0.6s ease';
+          const prev = jdAnchorEl.style.boxShadow;
+          jdAnchorEl.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.35)';
+          setTimeout(() => { jdAnchorEl.style.boxShadow = prev || 'none'; }, 1200);
+        } catch {}
+      }, 0);
+      return true; // keep port open while we run the async side effect (safe, even though we already replied)
+    } 
+    if (host) {
+      sendResponse?.({ ok: true, where: 'banner' });
+      setTimeout(() => {
+        try { host.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+      }, 0);
+      return true;
+    }
+    // This is the failure path.
+    //console.error('openSkillsPanel failed: No anchor or host element found.'); // 💡 ADD THIS LOGGING
+    sendResponse?.({ ok: false, reason: 'no_anchor' });
+    return; // synchronous no-op is fine her
+  }
+
+  if (request.action === 'getSkillMatchState') {
+    const meta = { url: location.href, title: getJobTitleStrict(), company: getCompanyName(), location: getLocationText(), logoUrl: getCompanyLogoUrl() };
+    sendResponse?.({ percentage, matchedWords, allSkills, meta, jobKey: currentJobKey });
+    return;// true;
+  }
+
+  if (request.action === 'getActiveLinkedInMeta') {
+    const fresh = isLinkedInHost() ? (getLinkedInActiveCardMeta() || lastActiveLIMeta) : null;
+    sendResponse?.(fresh || null);
+    return;// true;
+  }
+  if (request.action === 'getActiveCompanyMeta') {
+    const fresh = (!isLinkedInHost()) ? (getGenericActiveCardMeta() || lastActiveGenericMeta) : null;
+    sendResponse?.(fresh || null);
+    return;// true;
+  }
+
+  if (request.action === 'hasFillableForm') {
+    sendResponse({ ok: !!document.querySelector('input,select,textarea') });
+    return;// true;
+  }
+  if (request.action === 'showCanonicalChooser') {
+    // placeholder; you can render an overlay later
+    sendResponse?.({ ok: true });
+    return;// true;
+  }
+});

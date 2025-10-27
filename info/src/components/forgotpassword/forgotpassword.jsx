@@ -1,5 +1,5 @@
 import React, {useState} from "react";
-import { useLocation,useNavigate } from "react-router-dom";
+import { useLocation,useNavigate,useOutletContext } from "react-router-dom";
 import axios from "axios";
 import styles from"./forgotpassword.module.css";
 import { toast } from "react-toastify/unstyled";
@@ -7,6 +7,7 @@ const ForgotPassword = ()=>{
     const [email, setEmail]= useState('');
     const [ message, setMessage]=useState('');
     const [error, setError]= useState('');
+    const { showAlert } = useOutletContext();
     const navigate = useNavigate();
     const[showResend, setShowResend]=useState(false)
     const[showSend, setShowSend]=useState(true)
@@ -17,8 +18,9 @@ const ForgotPassword = ()=>{
         try{
             const response = await axios.post(`${API_BASE_URL}/api/forgot_password`,{email});
             const msg=response?.data?.msg || "Password resent link sent";
-            setMessage(msg);
-            setError('');
+            //setMessage(msg);
+            showAlert(msg);
+            //setError('');
             if(msg ==="Password resent link sent"){
                 setShowResend(true);
                 setShowSend(false);
@@ -27,8 +29,10 @@ const ForgotPassword = ()=>{
 
         } catch (err){
             const errorMessage = err.response?.data?.detail || "Failed to send reset link";
-            setError(errorMessage);
-            setMessage('');
+            //setError(errorMessage);
+            //setMessage('');
+            showAlert(errorMessage)
+            setShowResend(false);
             if (errorMessage ==="User does not exist")
                 {
                     setShowResend(false);
@@ -45,13 +49,15 @@ const ForgotPassword = ()=>{
         try{
             const response = await axios.post(`${API_BASE_URL}/api/resend_forgot_password`,{email});
             const msg=response?.data?.msg || "Password resent link sent";
-            setMessage(msg);
-            setError('');
+            //setMessage(msg);
+            //setError('');
+            showAlert(msg);
         }
         catch(err){
             const errorMessage = err.response?.data?.detail || "Failed to send reset link";
-            setError(errorMessage);
-            setMessage('');
+            //setError(errorMessage);
+            //setMessage('');
+            showAlert(errorMessage);
 
         }
     }

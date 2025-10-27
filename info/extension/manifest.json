@@ -3,19 +3,28 @@
   "name": "Job Aid",
   "version": "1.0",
   "description": "Automatic Job filler",
+  "icons": {
+    "16": "images/icon.jpeg",
+    "32": "images/icon.jpeg",
+    "48": "images/icon.jpeg",
+    "128": "images/icon.jpeg"
+  },
   "permissions": [
     "identity",
     "storage",
     "activeTab",
     "scripting",
-    "notifications"
+    "notifications",
+    "offscreen"
   ],
   "host_permissions": [
     "http://localhost:8000/*",
     "https://huggingface.co/*",
+    "https://*.huggingface.co/*",
     "https://cdn.jsdelivr.net/*",
     "<all_urls>"
   ],
+
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "Rapido",
@@ -25,25 +34,37 @@
       "32": "images/icon.jpeg"
     }
   },
+
   "background": {
     "service_worker": "background.bundle.js",
     "type": "module"
   },
+
+
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:8000 https://huggingface.co https://cdn.jsdelivr.net https://cas-bridge.xethub.hf.co https://*.huggingface.co;"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; connect-src 'self' http://localhost:8000 https://huggingface.co https://*.huggingface.co https://cdn.jsdelivr.net https://cas-bridge.xethub.hf.co; img-src 'self' data: blob: https:;"
   },
+
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["scripts/atswatchers.js","scripts/contentscript.js"],
-      "run_at": "document_idle"
+      "js": [
+        "scripts/atswatchers.js",
+        "scripts/contentscript.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ],
+
   "web_accessible_resources": [
     {
       "resources": [
         "images/icon.jpeg",
-        "autofill.bundle.js"
+        "autofill.bundle.js",
+        "offscreen/offscreen.html",
+        "offscreen/offscreen.bootstrap.js"
       ],
       "matches": ["<all_urls>"]
     }

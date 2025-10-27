@@ -5,6 +5,7 @@ import {useState, useContext} from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from "axios";
 import apiClient from '../../axios.js';
+import { useOutletContext } from 'react-router-dom';
 
 
 const LoginPage = () => {
@@ -18,7 +19,7 @@ const LoginPage = () => {
   const[showPassword, setShowPassword]=useState(false);
 
   const[showConstraints, setShowConstraints] = useState(false);
-
+  const { showAlert } = useOutletContext();
   const navigate = useNavigate();
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s]+$/;
@@ -63,6 +64,7 @@ const LoginPage = () => {
     const value = e.target.value;
     setEmail(value);
     setEmailError(emailRegex.test(value) ? '':'Invalid email Format');
+    //showAlert(emailRegex.test(value) ? '':'Invalid email Format');
   };
 
   const handlePasswordChange = (e) =>{
@@ -113,7 +115,7 @@ const LoginPage = () => {
         //Make an API call to the register endpoint
           const response = await axios.post(`${API_BASE_URL}/api/register`, { email,password});  //post to create or send new data
           console.log('Sign up Succesfully:', response.data);
-          alert("Please confirm the Email.");
+          showAlert("Please confirm the Email.");
 
           setIsSignUp(false);
           setPassword('')
@@ -125,7 +127,7 @@ const LoginPage = () => {
         //Extract the error mesdsage from the response.
         const errorMessage = error?.response?.data?.detail || error.message ||  "Sign up failed. Please try again."; 
         console.error("Sign up failed:", error);
-        alert(errorMessage);
+        showAlert(errorMessage);
 
       }
     }
@@ -139,11 +141,11 @@ const LoginPage = () => {
       catch(error){
         const errorMessage = error?.response?.data?.detail || "LogIn Failed";
         if(errorMessage === "User info is not confirmed Yet"){
-          alert("Please confirm the email");
+          showAlert("Please confirm the email");
         }
         else{
 
-          alert(errorMessage);
+          showAlert(errorMessage);
         }
 
       }
@@ -281,7 +283,7 @@ export default LoginPage;
           console.log("Token set in local storage");
 
         }
-        alert('LogIn Successful'); */
+        showAlert('LogIn Successful'); */
 
         /*<div className = {styles.actionbuttons}>
             <button type = "button" onClick={login}>Sign In With Google</button>
@@ -304,5 +306,5 @@ export default LoginPage;
   //import { AuthContext } from "../../authcontext";
   //const{login} = useContext(AuthContext);
             /*console.error("Login failed:", error);
-          alert("Invalid Credentials");*/
+          showAlert("Invalid Credentials");*/
               {/* Skip Button */}

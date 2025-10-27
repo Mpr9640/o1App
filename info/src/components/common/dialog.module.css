@@ -1,0 +1,37 @@
+.backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2000;
+}
+
+.dialog {
+  background: #fff; border-radius: 12px; padding: 20px;
+  max-width: 420px; width: calc(100% - 32px);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.2);
+}
+
+.title { margin: 0 0 8px; font-size: 18px; font-weight: 800; }
+.message { margin: 0 0 16px; font-size: 14px; color: #374151; }
+
+.actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+.primary {
+  border: 1px solid var(--app-border);
+  background: linear-gradient(180deg,#fff,#f5fbfe);
+  color: var(--app-text);
+  font-weight: 700; padding: 8px 12px; border-radius: 10px; cursor: pointer;
+}
+.primary:hover { border-color: #9fd3e8; box-shadow: 0 4px 14px rgba(15,108,148,0.12); }
+
+.ghost {
+  border: 1px solid #d1d5db; background: #fff; color: #374151;
+  padding: 8px 12px; border-radius: 10px; cursor: pointer;
+}
+.ghost:hover { background: #f9fafb; }
+
+.danger {
+  background: #ef4444; color: #fff; padding: 8px 12px;
+  border: none; border-radius: 10px; cursor: pointer;
+}
+.danger:hover { background: #dc2626; }
