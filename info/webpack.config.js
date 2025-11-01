@@ -21,12 +21,13 @@ module.exports = {
       if (name === 'autofill')   return 'autofill.bundle.js';
       if (name === 'resumechecking')  return 'resumechecking.bundle.js';
       if (name === 'offscreen')  return 'offscreen.bundle.js'; // <— bundle under /offscreen
-      if (name === 'page_probe')     return 'pageprobe.js'; 
+      //if (name === 'pageprobe')     return 'pageprobe.js'; 
       return '[name].bundle.js';
     },
     path: path.resolve(__dirname, 'dist'),
     module: true,                // ESM output (OK for MV3)
     libraryTarget: 'module',     // ESM
+    
   },
 
   mode: 'development',

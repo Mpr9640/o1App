@@ -2,7 +2,7 @@
 //Config ======
 const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 //Styles ======
-import { waitForResumeParseNetworkFirst } from'./resumechecking.js';
+//import { waitForResumeParseNetworkFirst } from'./resumechecking.js';
 const style = document.createElement('style');
 style.textContent = `
   .autofill-highlight{ outline:2px solid gold !important; transition: outline .3s ease-out; }
@@ -56,80 +56,6 @@ function normalizeToBooleanLike(v){
   if (BOOL_FALSE.has(s)) return 'no';
   return s;
 }
-//icims resume seter
-async function waitForPageSettle({ urlQuietMs = 800, domQuietMs = 600, timeoutMs = 8000 } = {}) {
-  const startUrl = location.href;
-  let lastChange = performance.now();
-
-  const mo = new MutationObserver(() => { lastChange = performance.now(); });
-  try { mo.observe(document.documentElement, { childList: true, subtree: true }); } catch {}
-
-  const t0 = performance.now();
-  return new Promise((resolve) => {
-    const timer = setInterval(() => {
-      const now = performance.now();
-      const urlChanged = location.href !== startUrl;
-      const domIdle   = (now - lastChange) >= domQuietMs;
-      const urlIdle   = urlChanged ? ((now - lastChange) >= urlQuietMs) : true;
-
-      if ((domIdle && urlIdle) || (now - t0) > timeoutMs) {
-        clearInterval(timer);
-        try { mo.disconnect(); } catch {}
-        // give layout a tick
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
-      }
-    }, 120);
-  });
-}
-async function waitForInputs(minCount = 1, tries = 12, gapMs = 300) {
-  for (let i = 0; i < tries; i++) {
-    const found = inputSelection();
-    if (found && found.length >= minCount) return found;
-    await waitForDomStable({ timeoutMs: gapMs + 120, quietMs: Math.min(200, gapMs) });
-  }
-  return inputSelection();
-}
-function canAttachResumeInThisFrame() {
-  // A. native file inputs we can set programmatically
-  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
-  if (fileInputs.length) return true;
-
-  // B. Known ATS selectors we can get a real input handle for after a click
-  // (iCIMS hidden input you already handle)
-  if (document.querySelector('#PortalProfileFields\\.Resume_File')) return true;
-
-  // Greenhouse common: input#resume or input[name="resume"]
-  if (document.querySelector('input#resume, input[name="resume"]')) return true;
-
-  // Lever: input[name="resume"] sometimes present
-  if (document.querySelector('input[type="file"][name="resume"]')) return true;
-
-  // SmartRecruiters often: input[type=file] exists when dialog open – we can’t open dialogs
-  // If only buttons like “Upload resume” exist (no input element we can set), return false
-  //const onlyButtons = !!document.querySelector('[data-testid*="upload"], [aria-label*="upload resume" i], button:matches([data-action*="resume" i],[data-testid*="resume" i])');
-  const onlyButtons = !!document.querySelector('[data-testid*="upload"], [aria-label*="upload resume" i], button:is([data-action*="resume" i],[data-testid*="resume" i])');
-  if (onlyButtons && !fileInputs.length) return false;
-
-  // Dropzones we can feed via synthetic Drag&Drop (you already support)
-  const dz = document.querySelector('.dropzone, [data-dropzone], .dz-clickable, .attachment-drop, .file-uploader');
-  if (dz) return true;
-
-  return false;
-}
-
-async function collectInputsWithRetry(tries = 3, gapMs = 300) {
-  for (let i=0; i<tries; i++) {
-    const res = inputSelection();
-    if (res && res.length) return res;
-    await delay(gapMs);
-  }
-  return inputSelection();
-}
-
-
-
-// DOM settle helper
-/*
 function waitForDomStable({ timeoutMs = 2500, quietMs = 180 } = {}) {
   return new Promise(resolve => {
     let timer = setTimeout(done, timeoutMs);
@@ -144,89 +70,6 @@ function waitForDomStable({ timeoutMs = 2500, quietMs = 180 } = {}) {
       clearTimeout(timer);
       resolve();
     }
-  });
-}
-*/
-// Safe, reload-proof DOM idle waiter
-export function waitForDomStable({
-  timeoutMs = 2500,
-  quietMs = 180,
-  observeAttributes = true
-} = {}) {
-  return new Promise((resolve) => {
-    let done = false;
-    let idleTimer = null;
-    let timeoutTimer = null;
-    let rootWatchTimer = null;
-    let lastRoot = null;
-
-    const finish = () => {
-      if (done) return;
-      done = true;
-      try { mo.disconnect(); } catch {}
-      clearTimeout(idleTimer);
-      clearTimeout(timeoutTimer);
-      clearInterval(rootWatchTimer);
-      resolve();
-    };
-
-    const onMutation = () => {
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(finish, quietMs);
-    };
-
-    const mo = new MutationObserver(onMutation);
-
-    const safeObserve = (node) => {
-      if (!node || !(node instanceof Node)) return false;
-      try {
-        mo.observe(node, {
-          subtree: true,
-          childList: true,
-          attributes: observeAttributes,
-          characterData: true
-        });
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    const attach = () => {
-      if (done) return;
-      // pick the best available root
-      const root = document.documentElement || document.body;
-      if (!root || !(root instanceof Node)) {
-        // try next frame until we get a real root (handles blank/reload)
-        return void requestAnimationFrame(attach);
-      }
-      if (root === lastRoot) return; // already observing this one
-
-      try { mo.disconnect(); } catch {}
-      lastRoot = root;
-
-      if (!safeObserve(root)) {
-        // if observing html fails, try body; if that fails, retry next frame
-        if (!safeObserve(document.body)) {
-          return void requestAnimationFrame(attach);
-        }
-      }
-      // (re)start quiet window
-      onMutation();
-    };
-
-    // Initial attach (may retry until a real root exists)
-    attach();
-
-    // Re-attach if the page swaps the root (common after resume parse)
-    rootWatchTimer = setInterval(() => {
-      if (done) return;
-      const currentRoot = document.documentElement || document.body;
-      if (currentRoot && currentRoot !== lastRoot) attach();
-    }, 250);
-
-    // Hard ceiling
-    timeoutTimer = setTimeout(finish, timeoutMs);
   });
 }
 
@@ -392,7 +235,7 @@ function nearestTextAround(el, px = 220, { includeIframes = false } = {}) {
   }
 
   const norm = normalizeFieldNameWithSpace(bestTxt);
-  console.log('[nearestTextAround]', norm);
+  //console.log('[nearestTextAround]', norm);
   return norm;
 }
 function findAssociatedLabel(el){
@@ -913,94 +756,6 @@ async function fillSelectElement(el, value, opts={}) {
 
 }
 
-/*
-async function fillSelectElement(el, value) {
-  if (!el || el.disabled || el.readOnly) return;
-
-  const tag = el.tagName?.toUpperCase?.();
-  const valStr = (value ?? '').toString().trim();
-  if (!valStr) return;
-
-  // Scroll to make it visible
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  simulateMouse(el);
-  await delay(50);
-
-  // Case 1: Native <select> (single)
-  if (tag === 'SELECT' && !el.multiple) {
-    console.log('select but not multiple');
-    console.log('complex,seelct,optiosn', ...el.options);
-    const match = [...el.options].find(opt =>
-      normalizeFieldNameWithSpace(opt.textContent || '').includes(
-        normalizeFieldNameWithSpace(valStr)
-      )
-    );
-    console.log('match:',match);
-
-    if (match) {
-      el.value = match.value;
-      el.selectedIndex = match.index;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
-  }
-
-  // Case 2: Native <select multiple>
-  if (tag === 'SELECT' && el.multiple) {
-    console.log('select and multiple');
-    const vals = splitMultiValues(valStr);
-    let changed = false;
-    for (const opt of el.options) {
-      const shouldSelect = vals.some(v =>
-        normalizeFieldNameWithSpace(opt.textContent || '').includes(
-          normalizeFieldNameWithSpace(v)
-        )
-      );
-      if (opt.selected !== shouldSelect) {
-        opt.selected = shouldSelect;
-        changed = true;
-      }
-    }
-    if (changed) {
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    return true;
-  }
-
-  // Case 3: Custom dropdown (MUI/Ant/React-Select etc.)
-  if (isComplexDropdown(el)) {
-    console.log('selct and complexdropdown')
-    try {
-      el.click();
-      await delay(200);
-
-      const list = document.querySelector('[role="listbox"], ul[role="menu"], .MuiAutocomplete-popper, .ant-select-dropdown, .rc-virtual-list-holder');
-      if (!list) return false;
-
-      const options = [...list.querySelectorAll('[role="option"], li, div')];
-      const target = options.find(opt =>
-        normalizeFieldNameWithSpace(opt.textContent || '').includes(
-          normalizeFieldNameWithSpace(valStr)
-        )
-      );
-
-      if (target) {
-        clickOptionLike(target);
-        return true;
-      }
-
-      // fallback: close if not found
-      document.body.click();
-    } catch (err) {
-      console.warn('fillSelectElement custom dropdown failed', err);
-    }
-  }
-
-  return false;
-}
-*/
 function isWorkdayCombo(el){ 
   // Prefer the nearest WD-ish container if present, else fall back to a div
   const root = el.closest(
@@ -1292,7 +1047,6 @@ async function fillWorkdayByButton(el, value, opts = {}) {
 const FILE_POS_KW_RE = /\b(resume|cv|curriculum\s*vitae|cover\s*letter)\b/i;
 const FILE_NEG_KW_RE = /\b(attach|upload|choose|select|browse|drag|drop|click|tap|select\s+one)\b/i;
 const FILE_SIZE_HINT_RE = /\b(?:max(?:imum)?\s*size|size\s*limit)\b.*|\(\s*\d+(?:\.\d+)?\s*(kb|mb|gb)\s*max\)/i;
-
 function isFileField(el){ return (el?.type||'').toLowerCase() === 'file'; }
 function stripFileCtas(s){
   if(!s) return '';
@@ -1330,6 +1084,585 @@ function findFileFieldName(field, maxHops = 6){
     el = el.parentElement;
   }
   return '';
+}
+/*************************************************
+ * Host gating
+ *************************************************/
+const SET1_HOSTS = new Set([
+  'icims.com',              // <- add more later
+]);
+
+const SET2_HOSTS = new Set([
+  'ashbyhq.com',
+  'myworkdayjobs.com',
+  'greenhouse.io',
+  'boards.greenhouse.io',
+]);
+
+function hostIn(set) {
+  const h = (location.hostname || '').toLowerCase();
+  for (const d of set) {
+    if (h === d || h.endsWith(`.${d}`)) return true;
+  }
+  return false;
+}
+
+const IS_SET1 = hostIn(SET1_HOSTS); // needs all the special checks (icims)
+const IS_SET2 = hostIn(SET2_HOSTS); // no special checks (plain resume fields)
+
+/*************************************************
+ * Existing helpers (unchanged except where noted)
+ *************************************************/
+// autofill.js (or your bundle)
+
+// ----- Messaging-based session helpers -----
+async function sessSet(obj) {
+  const res = await chrome.runtime.sendMessage({ type: 'SESSION_SET', payload: obj });
+  if (!res?.ok) throw new Error(res?.error || 'SESSION_SET failed');
+  return true;
+}
+async function sessGet(keyOrNull) {
+  const res = await chrome.runtime.sendMessage({ type: 'SESSION_GET', payload: keyOrNull ?? null });
+  if (!res?.ok) throw new Error(res?.error || 'SESSION_GET failed');
+  return res.data || {};
+}
+async function sessRemove(keyOrKeys) {
+  const res = await chrome.runtime.sendMessage({ type: 'SESSION_REMOVE', payload: keyOrKeys });
+  if (!res?.ok) throw new Error(res?.error || 'SESSION_REMOVE failed');
+  return true;
+}
+async function sessClear() {
+  const res = await chrome.runtime.sendMessage({ type: 'SESSION_CLEAR' });
+  if (!res?.ok) throw new Error(res?.error || 'SESSION_CLEAR failed');
+  return true;
+}
+
+// ----- Your pending flag helpers now just call sess* -----
+const PENDING_KEY = 'ja_resume_pending_v1';
+function pageKey() {
+  try { return `${location.origin}${location.pathname}`; }
+  catch { return location.href; }
+}
+async function setPendingResumeUpload(resumeSrc) {
+  if (!IS_SET1) return;
+  await sessSet({ [PENDING_KEY]: { page: pageKey(), t: Date.now(), resumeSrc } });
+}
+async function getPendingResumeUpload() {
+  if (!IS_SET1) return null;
+  const o = await sessGet(PENDING_KEY);
+  return o?.[PENDING_KEY] || null;
+}
+async function clearPendingResumeUpload() {
+  if (!IS_SET1) return;
+  await sessRemove(PENDING_KEY);
+}
+
+const parsedFileInputs = new WeakSet();
+function markAutofilled(el, source='resume') {
+  try { el.setAttribute('data-autofilled', 'true'); } catch {}
+  try { el.setAttribute('data-resume-parsed', 'true'); } catch {}
+  try { el.dataset.afSource = source; } catch {}
+  parsedFileInputs.add(el);
+}
+function setFilesWithNativeSetter(input, fileList) {
+  try {
+    // 1) Try the element's own descriptor (rare)
+    const own = Object.getOwnPropertyDescriptor(input, 'files');
+    if (own?.set) {
+      own.set.call(input, fileList);
+      return;
+    }
+    // 2) Try HTMLInputElement prototype
+    const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
+    if (proto?.set) {
+      proto.set.call(input, fileList);
+      return;
+    }
+    // 3) As a last resort, define then assign (some sites lock it)
+    Object.defineProperty(input, 'files', { configurable: true, writable: true, value: fileList });
+  } catch (e) {
+    console.warn('[resume] native setter failed, will attempt direct assign', e);
+    try { input.files = fileList; } catch (e2) { console.error('[resume] direct assign failed', e2); }
+  }
+}
+
+function dataURLtoBlob(dataurl){
+  try{
+    const [meta, data] = dataurl.split(',');
+    const mime = ((meta || '').match(/:(.*?);/) || [])[1] || 'application/octet-stream';
+    const bstr = atob((data || ''));
+    const u8 = new Uint8Array(bstr.length);
+    for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
+    return new Blob([u8], { type: mime });
+  }catch(e){
+    console.error('[resume] dataURLtoBlob failed', e);
+    return new Blob([], { type: 'application/octet-stream' });
+  }
+}
+
+function fetchResumeFromBackground(fileUrl){
+  return new Promise((resolve, reject)=>{
+    try{
+      chrome.runtime.sendMessage({ action:'fetchResume', fileUrl }, (resp)=>{
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError?.message || 'runtime error');
+          return;
+        }
+        if (resp && resp.success && resp.fileData) resolve(resp);
+        else reject(resp?.error || 'background fetch failed');
+      });
+    }catch(e){ reject(e); }
+  });
+}
+// Some ATS require a user gesture before file assignment
+async function withUserGesture(input, fn){
+  try {
+    input.focus();
+    // A short, real click tends to satisfy most defenses
+    //input.click?.();
+    await new Promise(r => setTimeout(r, 30));
+  } catch {}
+  return await fn();
+}
+async function simulateFileSelectionFromBackground(inputElement, fileUrl){
+  console.log('1. entered into simulate function');
+  const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
+  const { fileData, filename } = await fetchResumeFromBackground(src);
+  const blob = dataURLtoBlob(fileData);
+  const file = new File([blob], filename || (src.split('/').pop() || 'resume.pdf'), { type: blob.type || 'application/pdf' });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  console.log('2.. In simulatefileselection func before ensure visible')
+  console.log('3.. In simulatefileselection func going to set the file')
+  return withUserGesture(inputElement, async () => {
+    inputElement.dispatchEvent(new Event('focus', { bubbles: true }));
+    // Emit an innocuous input event pre-assignment to wake frameworks
+    inputElement.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    setFilesWithNativeSetter(inputElement, dt.files);
+    // Many frameworks listen to 'change' only
+    inputElement.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    // Some also react to a second input after change
+    inputElement.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    inputElement.blur();
+    inputElement.dispatchEvent(new Event('blur', { bubbles: true }));
+    return true;
+  });
+}
+/*
+// Shadow DOM walker for dropzones
+function* iterateRoots(root = document){
+  yield root;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+  let node;
+  while (node = walker.nextNode()){
+    if (node.shadowRoot) yield* iterateRoots(node.shadowRoot);
+  }
+}
+
+function collectDropzones(){
+  const sel = [
+    '.dropzone','[data-dropzone]','.file-drop','.upload-drop','[role="button"].drop',
+    '.upload-area','.dz-clickable','.dz-default','.attachment-drop','.file-uploader',
+    // Common ATS/UX patterns
+    '[aria-label*="drop file" i]','[aria-label*="upload" i]','[data-testid*="drop" i]',
+    '[class*="drop" i]','[class*="upload" i]'
+  ].join(',');
+
+  const zones = new Set();
+  for (const r of iterateRoots(document)) {
+    r.querySelectorAll(sel).forEach(z => zones.add(z));
+    // texty targets like “Drop your resume here”
+    r.querySelectorAll('*').forEach(el=>{
+      const t = (el.textContent || '').toLowerCase();
+      if (t && t.length < 200 && (t.includes('drop') || t.includes('drag') || t.includes('upload'))) {
+        zones.add(el);
+      }
+    });
+  }
+  return [...zones];
+}
+
+async function tryAttachToDropzones(fileUrl, { attempts = 3, perZoneTries = 2 } = {}){
+  console.log('1. entered into dropzone function');
+  const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
+  const { fileData, filename } = await fetchResumeFromBackground(src);
+  const blob = dataURLtoBlob(fileData);
+  const file = new File([blob], filename || (src.split('/').pop() || 'resume.pdf'), { type: blob.type || 'application/pdf' });
+  let zones = collectDropzones();
+  console.log('2. entered into dropzone function before zones.length');
+  if (!zones.length) return false;
+  const buildDT = () => {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    return dt;
+  };
+  console.log('3. entered into dropzone resume attach.');
+  const dispatchDrag = async (z) => {
+    z.classList.add('autofill-drop-indicator');
+
+    const dt = buildDT();
+    // Some engines ignore the ctor payload; set .dataTransfer after construct if needed
+    const mkEvent = (type) => {
+      let ev;
+      try { ev = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }); }
+      catch { ev = new DragEvent(type, { bubbles: true, cancelable: true }); }
+      try { Object.defineProperty(ev, 'dataTransfer', { value: dt }); } catch {}
+      return ev;
+    };
+
+    z.dispatchEvent(mkEvent('dragenter'));
+    await new Promise(r => setTimeout(r, 40));
+    z.dispatchEvent(mkEvent('dragover'));
+    await new Promise(r => setTimeout(r, 40));
+    z.dispatchEvent(mkEvent('drop'));
+
+    // Allow any async parse spinners to mount
+    await new Promise(r => setTimeout(r, 400));
+    z.classList.remove('autofill-drop-indicator');
+    return true;
+  };
+
+  for (let a = 0; a < attempts; a++){
+    for (const z of zones){
+      for (let k = 0; k < perZoneTries; k++){
+        try {
+          const ok = await dispatchDrag(z);
+          if (ok) return true;
+        } catch (e) {
+          z?.classList?.remove('autofill-drop-indicator');
+          // continue trying other zones
+        }
+      }
+    }
+    // re-scan; some sites replace the node after first try
+    await new Promise(r => setTimeout(r, 200));
+    zones = collectDropzones();
+  }
+  return false;
+}
+*/
+/*
+function setFilesWithNativeSetter(input, fileList) {
+  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
+  if (desc?.set) desc.set.call(input, fileList);
+  else input.files = fileList;
+}
+function dataURLtoBlob(dataurl){
+  const [meta, data] = dataurl.split(',');
+  const mime = (meta.match(/:(.*?);/)||[])[1] || '';
+  const bstr = atob(data);
+  const u8 = new Uint8Array(bstr.length);
+  for(let i=0;i<bstr.length;i++) u8[i]=bstr.charCodeAt(i);
+  return new Blob([u8], { type: mime||'application/octet-stream' });
+}
+function fetchResumeFromBackground(fileUrl){
+  return new Promise((resolve, reject)=>{
+    try{
+      chrome.runtime.sendMessage({action:'fetchResume', fileUrl}, (resp)=>{
+        if(resp && resp.success) resolve(resp);
+        else reject(resp?.error || 'background fetch failed');
+      });
+    }catch(e){ reject(e); }
+  });
+}
+async function simulateFileSelectionFromBackground(inputElement, fileUrl){
+  const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
+  const { fileData, filename } = await fetchResumeFromBackground(src);
+  const blob = dataURLtoBlob(fileData);
+  const file = new File([blob], filename || (src.split('/').pop() || 'resume.pdf'), { type: blob.type || 'application/pdf' });
+
+  const dt = new DataTransfer();
+  dt.items.add(file);
+
+  inputElement.focus();
+  inputElement.dispatchEvent(new Event('focus', { bubbles: true }));
+
+  setFilesWithNativeSetter(inputElement, dt.files);
+
+  inputElement.dispatchEvent(new Event('input',{bubbles:true,cancelable:true}));
+  inputElement.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
+
+  inputElement.blur();
+  inputElement.dispatchEvent(new Event('blur',{bubbles:true}));
+
+  return true;
+}
+  */
+async function tryAttachToDropzones(fileUrl){
+  const zones = document.querySelectorAll('.dropzone, [data-dropzone], .file-drop, .upload-drop, [role="button"].drop, .upload-area, .dz-clickable, .dz-default, .attachment-drop, .file-uploader');
+  if(!zones.length) return false;
+
+  const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
+  const { fileData, filename } = await fetchResumeFromBackground(src);
+  const blob = dataURLtoBlob(fileData);
+  const file = new File([blob], filename || (src.split('/').pop() || 'resume.pdf'), { type: blob.type || 'application/pdf' });
+
+  for(const z of zones){
+    try{
+      z.classList.add('autofill-drop-indicator');
+      const dt = new DataTransfer();
+      dt.items.add(file);
+
+      const enter = new DragEvent('dragenter',{bubbles:true,dataTransfer:dt});
+      const over  = new DragEvent('dragover', {bubbles:true,dataTransfer:dt});
+      const drop  = new DragEvent('drop',     {bubbles:true,dataTransfer:dt});
+      z.dispatchEvent(enter); await delay(60);
+      z.dispatchEvent(over);  await delay(60);
+      z.dispatchEvent(drop);
+      await delay(400);
+      z.classList.remove('autofill-drop-indicator');
+      return true;
+    }catch(e){
+      z.classList?.remove('autofill-drop-indicator');
+    }
+  }
+  return false;
+}
+const RESUME_POS = [/\bresume\b/i, /\bcv\b/i, /\bcurriculum\s*vitae\b/i, /\brésumé\b/i];
+const RESUME_NEG = [/\bcover\s*letter\b/i, /\btranscript\b/i, /\breferences?\b/i];
+function isResumeHumanName(name=''){
+  const t = String(name || '').trim();
+  if (!t) return false;
+  if (RESUME_NEG.some(r => r.test(t))) return false;
+  return RESUME_POS.some(r => r.test(t));
+}
+
+/*************************************************
+ * Wait for ATS parsers to finish — used only on SET1
+ *************************************************/
+async function waitForResumeParseToFinish({
+  timeoutMs = 15000,
+  quietMs   = 1200,
+  pollMs    = 200
+} = {}) {
+  if (!IS_SET1) return { navigated:false }; // <-- gate: skip for set2/others
+
+  const startKey = pageKey();
+
+  const spinnerSel = [
+    '.spinner', '.loading', '[aria-busy="true"]',
+    '.wd-loading', '.icims-loading', '.ashby-loading',
+    '.sr-loading', '.gh-loading', '[data-test="loading"]'
+  ].join(',');
+
+  const snapshotInputs = () => {
+    const arr = [];
+    document.querySelectorAll('input, textarea, select').forEach(el => {
+      if (!el || !(el instanceof HTMLElement)) return;
+      const type = (el.type || '').toLowerCase();
+      if (type === 'password' || type === 'hidden') return;
+      arr.push({ el, val: ('value' in el ? el.value : ''), disabled: !!el.disabled });
+    });
+    return arr;
+  };
+  const hasValuesChanged = (b, a) => {
+    if (a.length !== b.length) return true;
+    for (let i=0; i<b.length; i++){
+      const x=b[i], y=a[i];
+      if (x.el !== y.el) return true;
+      if (x.val !== y.val) return true;
+      if (x.disabled !== y.disabled) return true;
+    }
+    return false;
+  };
+
+  const before = snapshotInputs();
+  let lastDomChange = performance.now();
+  const mo = new MutationObserver(() => { lastDomChange = performance.now(); });
+  try { mo.observe(document.documentElement, { childList:true, subtree:true, attributes:true, characterData:true }); } catch {}
+
+  const hasSpinner = () => !!document.querySelector(spinnerSel);
+  const urlChanged = () => pageKey() !== startKey;
+
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeoutMs) {
+    const after = snapshotInputs();
+    const valueChurn = hasValuesChanged(before, after);
+
+    if (urlChanged() || (valueChurn && !hasSpinner())) break;
+    await delay(pollMs);
+  }
+
+  const quietStart = performance.now();
+  while (performance.now() - quietStart < quietMs) {
+    if (performance.now() - lastDomChange < quietMs/2) {
+      await delay(pollMs);
+      continue;
+    }
+    await delay(pollMs);
+  }
+
+  try { mo.disconnect(); } catch {}
+  return { navigated: urlChanged() };
+}
+async function handleFileInput(input, fileUrl){
+  const t = (input?.type || '').toLowerCase();
+  if (t !== 'file' || input.disabled || input.readOnly) return false;
+  console.log('1.handlefileinput func entered')
+  // If a file already present, skip
+  if (input.files && input.files.length > 0) {
+    console.log('2. handlefileinput func file already present on this input — skipping upload');
+    markAutofilled(input, 'resume');
+    return true;
+  }
+
+  // --- SET1 (icims): full pending + wait + re-entry support ---
+  if (IS_SET1) {
+    try { await setPendingResumeUpload(fileUrl); } catch {}
+    try {
+      const ok = await simulateFileSelectionFromBackground(input, fileUrl);
+      if (ok) {
+        const res = await waitForResumeParseToFinish();
+        markAutofilled(input, 'resume');
+        // Log pending state safely (no storage.session direct from CS)
+        try {
+          const pending = await getPendingResumeUpload();
+          console.log('[resume] pending (after native set):', pending);
+          if (pending && !res?.navigated && pending.page === pageKey()) {
+            await clearPendingResumeUpload();
+          }
+        } catch {}
+        return true;
+      }
+    } catch (e) {
+      console.log('[resume] native set failed, trying dropzone', e);
+    }
+
+    try {
+      const ok2 = await tryAttachToDropzones(fileUrl);
+      if (ok2) {
+        const res = await waitForResumeParseToFinish();
+        markAutofilled(input, 'resume');
+        try {
+          const pending = await getPendingResumeUpload();
+          console.log('[resume] pending (after drop):', pending);
+          if (pending && !res?.navigated && pending.page === pageKey()) {
+            await clearPendingResumeUpload();
+          }
+        } catch {}
+        return true;
+      }
+    } catch (e) {
+      console.log('[resume] dropzone failed', e);
+    }
+   /*
+    // Last-ditch: show a clickable anchor next to the input
+    try{
+      const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
+      const filename = src.split('/').pop() || 'resume.pdf';
+      const a = document.createElement('a');
+      a.href = src; a.textContent = filename; a.target='_blank';
+      a.style.display='inline-block'; a.style.marginLeft='8px'; a.style.color='#06c'; a.style.textDecoration='underline';
+      input.parentNode?.insertBefore(a, input.nextSibling);
+    }catch{} */
+    return false;
+  }
+
+  // --- SET2 (ashby/workday/greenhouse) & others: simple upload, no waits/flags ---
+  try {
+    const ok = await simulateFileSelectionFromBackground(input, fileUrl);
+    if (ok) { markAutofilled(input, 'resume'); return true; }
+  } catch (e) {
+    console.log('[resume] simple upload failed, trying dropzone (set2/others)', e);
+  try {
+    const ok2 = await tryAttachToDropzones(fileUrl);
+    if (ok2) { markAutofilled(input, 'resume'); return true; }
+  } catch { console.log('[resume] trying dropzone  failed', e);}
+  }/*
+    // Last-ditch: show a clickable anchor next to the input
+  try{
+    const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
+    const filename = src.split('/').pop() || 'resume.pdf';
+    const a = document.createElement('a');
+    a.href = src; a.textContent = filename; a.target='_blank';
+    a.style.display='inline-block'; a.style.marginLeft='8px'; a.style.color='#06c'; a.style.textDecoration='underline';
+    input.parentNode?.insertBefore(a, input.nextSibling);
+  }catch{}*/
+
+  return false;
+}
+
+async function resumeFirstFromInputs(inputs, autofillData, watchMs = 1000) {
+  if (!Array.isArray(inputs) || !inputs.length) return { ok:false, reason:'no-inputs' };
+  console.log('1 resumefirst func parsing started');
+
+  const resumeFile = autofillData?.['resume'];
+  if (!resumeFile) {
+    console.log('[resume] no resume file/url on autofillData["resume"]');
+    return { ok:false, reason:'no-resume-data' };
+  }
+
+  const candidates = inputs.filter(o => {
+    const el = o?.element;
+    if (!el) return false;
+    const t = (el.type || '').toLowerCase();
+    if (t !== 'file') return false;
+    if (!o.humanName) return false;
+    return isResumeHumanName(o.humanName);
+  });
+
+  if (candidates.length === 0) return { ok:false, reason:'no-resume-file-input' };
+
+  let anySuccess = false;
+
+  for (const r of candidates) {
+    const el = r.element;
+    const label = String(r.humanName || '');
+
+    // Skip ATS-wide "autofill" slots
+    if (label.toLowerCase().includes('autofill')) {
+      console.log('2.resumefirst func skipping autofill-slot:', label);
+      continue;
+    }
+
+    // input already has a file (e.g., after refresh)
+    if (el.files && el.files.length > 0) {
+      console.log('3.resume first func input already has file, skipping:', label);
+      markAutofilled(el, 'resume');
+      anySuccess = true;
+      continue;
+    }
+
+    console.log('4.resume frist func uploading into:', label);
+    try {
+      const ok = await handleFileInput(el, resumeFile);
+      if (ok) {
+        anySuccess = true;
+        if (IS_SET1) await new Promise(r => setTimeout(r, Math.max(500, watchMs)));
+      }
+    } catch (e) {
+      console.log('[resume] file handle error', e);
+    }
+  }
+
+  return anySuccess ? { ok:true } : { ok:false, reason:'resume-upload-failed' };
+}
+/*
+//New resume helpers regarding page refresh
+function pageKey() {
+  try { return `${location.origin}${location.pathname}`; }
+  catch { return location.href; }
+}
+
+// ===== Session marker to survive refresh/rerender =====
+const PENDING_KEY = 'ja_resume_pending_v1';
+
+async function setPendingResumeUpload(resumeSrc) {
+  try { await chrome.storage.session.set({ [PENDING_KEY]: { page: pageKey(), t: Date.now(), resumeSrc } }); } catch {}
+}
+async function getPendingResumeUpload() {
+  try { const o = await chrome.storage.session.get(PENDING_KEY); return o?.[PENDING_KEY] || null; } catch { return null; }
+}
+async function clearPendingResumeUpload() {
+  try { await chrome.storage.session.remove(PENDING_KEY); } catch {}
+}
+// ===== Marking parsed file inputs =====
+const parsedFileInputs = new WeakSet();
+function markAutofilled(el, source='resume') {
+  try { el.setAttribute('data-autofilled', 'true'); } catch {}
+  try { el.setAttribute('data-resume-parsed', 'true'); } catch {}
+  try { el.dataset.afSource = source; } catch {}
+  parsedFileInputs.add(el);
 }
 function setFilesWithNativeSetter(input, fileList) {
   const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
@@ -1411,67 +1744,6 @@ async function tryAttachToDropzones(fileUrl){
   }
   return false;
 }
-/**
- * Attach a resume file to an <input type="file"> and BLOCK until the site finishes
- * uploading/parsing (or fails/timeout). Always returns a result object.
- *
- * @param {HTMLInputElement} input
- * @param {string} fileUrl
- * @returns {Promise<{method:'native'|'dropzone'|'fallback', status:'parsed'|'failed'|'timeout'|'attach-failed', elapsedMs?:number}>}
- */
-async function handleFileInput(input, fileUrl) {
-  try {
-    // --- Path 1: set the file directly on the input
-    const ok = await simulateFileSelectionFromBackground(input, fileUrl);
-    if (ok) {
-      const res = await waitForResumeParseNetworkFirst(input, {
-        idleMs: 1200,
-        timeoutMs: 30000,
-        maxEvents: 160
-      });
-      try {
-        input.dataset.resumeParseStatus = res.status;
-        input.dataset.resumeParseElapsed = String(res.elapsedMs ?? '');
-      } catch {}
-      return { method: 'native', ...res };
-    }
-  } catch (e) {
-    console.log('Native file set failed, trying dropzone', e);
-  }
-
-  try {
-    // --- Path 2: simulate a drag&drop onto common dropzones
-    const ok2 = await tryAttachToDropzones(fileUrl);
-    if (ok2) {
-      const res = await waitForResumeParseNetworkFirst(input, {
-        idleMs: 1200,
-        timeoutMs: 30000,
-        maxEvents: 160
-      });
-      try {
-        input.dataset.resumeParseStatus = res.status;
-        input.dataset.resumeParseElapsed = String(res.elapsedMs ?? '');
-      } catch {}
-      return { method: 'dropzone', ...res };
-    }
-  } catch (e) {
-    console.log('Dropzone attach failed', e);
-  }
-
-  // --- Path 3: we couldn’t attach; leave a link (your existing fallback UI does this elsewhere)
-  try {
-    const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
-    const filename = src.split('/').pop() || 'resume.pdf';
-    const a = document.createElement('a');
-    a.href = src; a.textContent = filename; a.target = '_blank';
-    a.style.display = 'inline-block'; a.style.marginLeft = '8px';
-    a.style.color = '#06c'; a.style.textDecoration = 'underline';
-    input.parentNode?.insertBefore(a, input.nextSibling);
-  } catch {}
-
-  return { status: 'attach-failed', method: 'fallback' };
-}
-
 const RESUME_POS = [/\bresume\b/i, /\bcv\b/i, /\bcurriculum\s*vitae\b/i, /\brésumé\b/i];
 const RESUME_NEG = [/\bcover\s*letter\b/i, /\btranscript\b/i, /\breferences?\b/i];
 function isResumeHumanName(name=''){
@@ -1484,241 +1756,194 @@ function markAutofilled(el, source='resume') {
   try { el.setAttribute('data-autofilled', 'true'); } catch {}
   try { el.dataset.afSource = source; } catch {}
 }
+// ===== Wait for ATS parsers to finish =====
+async function waitForResumeParseToFinish({
+  timeoutMs = 15000,
+  quietMs   = 1200,
+  pollMs    = 200
+} = {}) {
+  const startKey = pageKey();
 
+  const spinnerSel = [
+    '.spinner', '.loading', '[aria-busy="true"]',
+    '.wd-loading', '.icims-loading', '.ashby-loading',
+    '.sr-loading', '.gh-loading', '[data-test="loading"]'
+  ].join(',');
 
-/*
-async function resumeFirstFromInputs(inputs, autofillData,watchMs = 1000) {
+  const snapshotInputs = () => {
+    const arr = [];
+    document.querySelectorAll('input, textarea, select').forEach(el => {
+      if (!el || !(el instanceof HTMLElement)) return;
+      const type = (el.type || '').toLowerCase();
+      if (type === 'password' || type === 'hidden') return;
+      arr.push({ el, val: ('value' in el ? el.value : ''), disabled: !!el.disabled });
+    });
+    return arr;
+  };
+  const hasValuesChanged = (b, a) => {
+    if (a.length !== b.length) return true;
+    for (let i=0; i<b.length; i++){
+      const x=b[i], y=a[i];
+      if (x.el !== y.el) return true;
+      if (x.val !== y.val) return true;
+      if (x.disabled !== y.disabled) return true;
+    }
+    return false;
+  };
+
+  const before = snapshotInputs();
+  let lastDomChange = performance.now();
+  const mo = new MutationObserver(() => { lastDomChange = performance.now(); });
+  try { mo.observe(document.documentElement, { childList:true, subtree:true, attributes:true, characterData:true }); } catch {}
+
+  const hasSpinner = () => !!document.querySelector(spinnerSel);
+  const urlChanged = () => pageKey() !== startKey;
+
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeoutMs) {
+    const after = snapshotInputs();
+    const valueChurn = hasValuesChanged(before, after);
+
+    if (urlChanged() || (valueChurn && !hasSpinner())) break;
+    await delay(pollMs);
+  }
+
+  const quietStart = performance.now();
+  while (performance.now() - quietStart < quietMs) {
+    if (performance.now() - lastDomChange < quietMs/2) {
+      await delay(pollMs);
+      continue;
+    }
+    await delay(pollMs);
+  }
+
+  try { mo.disconnect(); } catch {}
+  return { navigated: urlChanged() };
+}
+
+// ===== Core: handleFileInput (checks input value BEFORE parsing) =====
+async function handleFileInput(input, fileUrl){
+  // 0) Guard: input must be a file input and enabled
+  const t = (input?.type || '').toLowerCase();
+  if (t !== 'file' || input.disabled || input.readOnly) return false;
+
+  // 1) EARLY EXIT: If this file input already has a value, SKIP (no global helper)
+  //    Many ATSes populate input.files on refresh; that’s enough signal.
+  if (input.files && input.files.length > 0) {
+    console.log('[resume] file already present on this input — skipping upload');
+    markAutofilled(input, 'resume'); // mark so later passes skip it too
+    return true;
+  }
+
+  // 2) Set a pending flag so a refresh/rerender will cause re-entry
+  try { await setPendingResumeUpload(fileUrl); } catch {}
+
+  // 3) Primary path: programmatic file selection
+  try {
+    const ok = await simulateFileSelectionFromBackground(input, fileUrl);
+    if (ok) {
+      const res = await waitForResumeParseToFinish();
+      markAutofilled(input, 'resume');
+      // If no navigation, clear the pending flag
+      const pending = await getPendingResumeUpload();
+      if (pending && !res?.navigated && pending.page === pageKey()) {
+        await clearPendingResumeUpload();
+      }
+      return true;
+    }
+  } catch(e) {
+    console.log('[resume] native set failed, trying dropzone', e);
+  }
+
+  // 4) Fallback path: dropzone simulation
+  try {
+    const ok2 = await tryAttachToDropzones(fileUrl);
+    if (ok2) {
+      const res = await waitForResumeParseToFinish();
+      markAutofilled(input, 'resume');
+      const pending = await getPendingResumeUpload();
+      if (pending && !res?.navigated && pending.page === pageKey()) {
+        await clearPendingResumeUpload();
+      }
+      return true;
+    }
+  } catch(e) {
+    console.log('[resume] dropzone failed', e);
+  }
+
+  // 5) Optional UX breadcrumb (won’t interfere with later parsing)
+  try{
+    const src = fileUrl.startsWith('http') ? fileUrl : `${API_BASE_URL}${fileUrl}`;
+    const filename = src.split('/').pop() || 'resume.pdf';
+    const a = document.createElement('a');
+    a.href = src; a.textContent = filename; a.target='_blank';
+    a.style.display='inline-block'; a.style.marginLeft='8px'; a.style.color='#06c'; a.style.textDecoration='underline';
+    input.parentNode?.insertBefore(a, input.nextSibling);
+  }catch{}
+
+  // leave pending flag; if navigation still happens, the boot hook will re-run
+  return false;
+}
+
+// ===== Core: resumeFirstFromInputs (skips inputs that already have value) =====
+async function resumeFirstFromInputs(inputs, autofillData, watchMs = 1000) {
   if (!Array.isArray(inputs) || !inputs.length) return { ok:false, reason:'no-inputs' };
-  //console.log('resume parsing is started');
-  const resumeInputObj = inputs.filter(o => {
-    const el = o.element;
-    if(el.type.toLowerCase()==='file' && o.humanName){
-      return isResumeHumanName(o.humanName);
-    }
-  });
-  if (resumeInputObj.length === 0) {
-    return { ok: false, reason: 'no-resume-file-input' };
-  }
-  //if (!resumeInputObj) return { ok:false, reason:'no-resume-file-input' };
-  for(const r of resumeInputObj){
-    if(r.humanName.includes('autofill')){
-      return { ok:false, reason:'Autofill-resume-file-input' };
-    }
-    else{
-      const resumeFile = autofillData['resume'];
-      try{ await handleFileInput(resumeInputObj.element, resumeFile); await delay(2000); }catch(e){ log('File handle error', e); }
-      markAutofilled(resumeInputObj.element, 'resume');
+  console.log('[resume] parsing started');
 
-    }
-  }
-
-  /*
-  if(resumeInputObj && resumeInputObj.humanName.includes('autofill')){
-    return { ok:false, reason:'Autofill-resume-file-input' };
-
-  };
-
-  const resumeFile = autofillData['resume'];
-  try{ await handleFileInput(resumeInputObj.element, resumeFile); await delay(2000); }catch(e){ log('File handle error', e); }
-  markAutofilled(resumeInputObj.element, 'resume');
-  const candidates = inputs
-    .map(o => o.element)
-    .filter(el => el && el.isConnected && !el.disabled && !el.readOnly);
-
-  const before = new Map();
-  for (const el of candidates) before.set(el, snapshotValue(el));
-
-  const end = Date.now() + watchMs;
-  while (Date.now() < end) {
-    await new Promise(r => setTimeout(r, 200));
-    for (const el of candidates) {
-      if (!el.isConnected) continue;
-      const prev = before.get(el);
-      const now = snapshotValue(el);
-      if (String(prev) !== String(now) && hasMeaningfulValue(el)) {
-        markAutofilled(el, 'resume');
-        before.set(el, now);
-      }
-    }
-  }
-  return { ok:true };
-}
-*/
-/*
-async function resumeFirstFromInputs(inputs, autofillData, watchMs = 1000, { fillAll = true } = {}) {
-  if (!Array.isArray(inputs) || inputs.length === 0) {
-    return { ok: false, reason: 'no-inputs' };
-  }
-
-  const resumeFile = autofillData?.resume;
+  const resumeFile = autofillData?.['resume'];
   if (!resumeFile) {
-    return { ok: false, reason: 'no-resume-file-path' };
+    console.log('[resume] no resume file/url on autofillData["resume"]');
+    return { ok:false, reason:'no-resume-data' };
   }
 
-  // Pick all <input type="file"> that look like "resume/CV..."
   const candidates = inputs.filter(o => {
     const el = o?.element;
-    return el && (el.type || '').toLowerCase() === 'file' && o?.humanName && isResumeHumanName(o.humanName);
+    if (!el) return false;
+    const t = (el.type || '').toLowerCase();
+    if (t !== 'file') return false;
+    if (!o.humanName) return false;
+    return isResumeHumanName(o.humanName);
   });
 
   if (candidates.length === 0) {
-    return { ok: false, reason: 'no-resume-file-input' };
+    return { ok:false, reason:'no-resume-file-input' };
   }
 
-  // Partition: skip any “autofill” resume field; keep regular ones
-  const isAutoFillish = (txt='') => /auto[\s-]?fill/i.test(String(txt));
-  const nonAutofill = [];
-  const skippedAutofill = [];
+  let anySuccess = false;
 
-  for (const c of candidates) {
-    const idn = ((c.element.id || '') + ' ' + (c.element.name || '')).toLowerCase();
-    const hn  = String(c.humanName || '');
-    if (isAutoFillish(hn) || isAutoFillish(idn)) skippedAutofill.push(c);
-    else nonAutofill.push(c);
-  }
-
-  if (nonAutofill.length === 0) {
-    return { ok: false, reason: 'only-autofill-resume-inputs', skippedAutofill: skippedAutofill.length };
-  }
-
-  let filled = 0;
-  let lastError = null;
-
-  for (const r of nonAutofill) {
+  for (const r of candidates) {
     const el = r.element;
-    if (!el || el.getAttribute('data-autofilled') === 'true') continue;
+    const label = String(r.humanName || '');
 
-    try {
-      await handleFileInput(el, resumeFile);
-      await delay(Math.max(300, watchMs));         // give UI a beat
+    // Skip ATS-wide "autofill" slots
+    if (label.toLowerCase().includes('autofill')) {
+      console.log('[resume] skipping autofill-slot:', label);
+      continue;
+    }
+
+    // EARLY EXIT: this specific file input already holds a file → skip (no global helper)
+    if (el.files && el.files.length > 0) {
+      console.log('[resume] input already has file, skipping:', label);
       markAutofilled(el, 'resume');
-      filled += 1;
-      if (!fillAll) break;                         // stop after first if desired
-    } catch (e) {
-      lastError = e;
-      // try next candidate
+      anySuccess = true; // treat as success because resume is present
+      continue;
     }
-  }
 
-  if (filled > 0) {
-    return { ok: true, filled, attempted: nonAutofill.length, skippedAutofill: skippedAutofill.length };
-  }
-
-  return {
-    ok: false,
-    reason: 'attach-failed',
-    attempted: nonAutofill.length,
-    skippedAutofill: skippedAutofill.length,
-    error: lastError?.message || String(lastError || '')
-  };
-}
-*/
-/**
- * Find likely resume inputs among your discovered inputs, attach the resume file,
- * WAIT for parse completion, and propagate a status result up to the caller.
- *
- * @param {Array<{element: HTMLInputElement, humanName?: string}>} inputs
- * @param {{resume?: string}} autofillData
- * @param {number} watchMs  (unused now; kept for signature compatibility)
- * @param {{fillAll?: boolean}} options
- * @returns {Promise<{
- *   ok: boolean,
- *   filled?: number,
- *   attempted?: number,
- *   plain_count?: number,
- *   autofill_count?: number,
- *   status: 'parsed'|'failed'|'timeout'|'attach-failed'|'unknown',
- *   elapsedMs?: number|null,
- *   method?: 'native'|'dropzone'|'fallback'|null,
- *   reason?: string,
- *   error?: string
- * }>}
- */
-async function resumeFirstFromInputs(inputs, autofillData, watchMs = 1000, { fillAll = true } = {}) {
-  if (!Array.isArray(inputs) || inputs.length === 0) {
-    return { ok: false, reason: 'no-inputs', status: 'attach-failed' };
-  }
-  // If this frame has no attachable inputs/dropzones, bail fast
-  if (!canAttachResumeInThisFrame()) {
-    return { ok: false, reason: 'unattachable-in-this-frame', status: 'attach-failed' };
-  }
-  const resumeFile = autofillData?.resume;
-  if (!resumeFile) {
-    return { ok: false, reason: 'no-resume-file-path', status: 'attach-failed' };
-  }
-
-  // Pick all <input type="file"> that look like "resume/CV..."
-  const candidates = inputs.filter(o => {
-    const el = o?.element;
-    return el && (el.type || '').toLowerCase() === 'file' && o?.humanName && isResumeHumanName(o.humanName);
-  });
-  if (candidates.length === 0) {
-    return { ok: false, reason: 'no-resume-file-input', status: 'attach-failed' };
-  }
-
-  // Partition: prefer plain resume inputs, but DO NOT skip “autofill” ones — use as fallback
-  const isAutoFillish = (txt = '') => /auto[\s-]?fill/i.test(String(txt));
-  const plain = [];
-  const autoFillish = [];
-
-  for (const c of candidates) {
-    const idn = ((c.element.id || '') + ' ' + (c.element.name || '')).toLowerCase();
-    const hn  = String(c.humanName || '');
-    (isAutoFillish(hn) || isAutoFillish(idn)) ? autoFillish.push(c) : plain.push(c);
-  }
-
-  const runList = plain.length ? plain : autoFillish;
-
-  let filled = 0;
-  let lastResult = null;
-  let lastError = null;
-
-  for (const r of runList) {
-    const el = r.element;
-    if (!el || el.getAttribute('data-autofilled') === 'true') continue;
-
+    console.log('[resume] uploading into:', label);
     try {
-      const result = await handleFileInput(el, resumeFile); // blocks until parsed/failed/timeout
-      lastResult = result;
-
-      if (result && result.status && result.status !== 'attach-failed') {
-        markAutofilled(el, 'resume');
-        filled += 1;
-        if (!fillAll) break; // stop after first if desired
-      } else {
-        // try next resume input candidate
-        continue;
+      const ok = await handleFileInput(el, resumeFile);
+      if (ok) {
+        anySuccess = true;
+        await delay(Math.max(500, watchMs)); // grace for lazy parsers
       }
     } catch (e) {
-      lastError = e;
-      // continue to next candidate
+      console.log('[resume] file handle error', e);
     }
   }
 
-  if (filled > 0) {
-    return {
-      ok: true,
-      filled,
-      attempted: runList.length,
-      plain_count: plain.length,
-      autofill_count: autoFillish.length,
-      status: lastResult?.status || 'unknown',
-      elapsedMs: lastResult?.elapsedMs ?? null,
-      method: lastResult?.method || null
-    };
-  }
-
-  return {
-    ok: false,
-    reason: 'attach-failed',
-    attempted: runList.length,
-    plain_count: plain.length,
-    autofill_count: autoFillish.length,
-    error: lastError?.message || String(lastError || ''),
-    status: lastResult?.status || 'attach-failed'
-  };
+  return anySuccess ? { ok:true } : { ok:false, reason:'resume-upload-failed' };
 }
-
+*/
 const isLeverHost = /(?:^|\.)lever\.co$/i.test(location.hostname);
 function stripRequiredAsterisk(s){ return s.replace(/\s*[:*]\s*$/, ''); }
 // kill live-status & helper text that leaks into container text on many hosts
@@ -2039,7 +2264,7 @@ function collectInputsIn(root){
     }
     return 0;
   });
-  console.log('All Results with input,label and id:', results.slice(0,70));
+  //console.log('All Results with input,label and id:', results.slice(0,70));
   return results;
 }
 
@@ -2130,7 +2355,7 @@ function collectInputsIn(root){
 function collectAllRoots(){
   const roots = [document];
   const stack = [...allShadowHosts(document)];
-  document.querySelectorAll('iframe, frame').forEach(fr=>{
+  document.querySelectorAll('iframe').forEach(fr=>{              //, frame
     try{
       if (fr.contentDocument) {
         roots.push(fr.contentDocument);
@@ -2165,7 +2390,7 @@ function inputSelection(){
 */
 function shouldSkipTopInputScan() {
   if (window.top !== window) return false; // we are inside an iframe already
-  const frames = document.querySelectorAll('iframe, frame');
+  const frames = document.querySelectorAll('iframe'); //,frame
   for (const f of frames) {
     try {
       const src = f.src || '';
@@ -2182,7 +2407,7 @@ function inputSelection(){
     console.log('[inputSelection] ATS iframe detected — skip input scanning in top window');
     return [];
   }
-  const roots = isIcimsHost ? [getIcimsFormRoot()] : collectAllRoots();
+  const roots = collectAllRoots(); //isIcimsHost ? [getIcimsFormRoot()] : 
   const all = roots.flatMap(r => collectInputsIn(r));
 
   const uniq = [];
@@ -2202,7 +2427,7 @@ function inputSelection(){
     uniq.push(it);
   }
 
-  console.log('Total inputs collected', uniq.length, uniq.slice(0,70));
+  //console.log('Total inputs collected', uniq.length, uniq.slice(0,70));
   return uniq;
 }
 
@@ -2417,39 +2642,7 @@ async function fillOneBySection(sectionKey, container, dataItem) {
   if (sectionKey === 'languages') return fillOneLanguage(container, dataItem);
   if (sectionKey === 'certifications') return fillOneCertification(container, dataItem);
 }
-// NEW: Repeated-section mapping/locking helpers
-//Function to return any edu/exp forms nearest matched
-const CONTAINER_UP_SEL2 = 'section,fieldset,form,article';
-/*function resolveNearestSectionRoot(el, maxHops=6){
-  let cur = el;
-  for (let i=0;i<maxHops && cur;i++){
-    if (cur.matches?.(CONTAINER_UP_SEL2)) return cur;
-    cur = cur.parentElement;
-  }
-  return el.closest(CONTAINER_UP_SEL2) || el.closest('form') || document.body;
-} */
-//finding a label for form/fieldset
-/*
-function scrapeTitleFor(node){
-  const legend = node.matches('fieldset') ? node.querySelector('legend') : null;
-  if (legend?.textContent) return legend.textContent.trim();
-  const heading = node.querySelector(HEADING_SEL);
-  if (heading?.textContent) return heading.textContent.trim();
-  const aria = node.getAttribute?.('aria-label') || '';
-  if (aria) return aria.trim();
-  const labelledBy = node.getAttribute?.('aria-labelledby');
-  if (labelledBy){
-    const txt = labelledBy.split(/\s+/).map(id=>node.ownerDocument.getElementById(id)?.textContent||'').join(' ').trim();
-    if (txt) return txt;
-  }
-  let prev = node.previousElementSibling;
-  while (prev){
-    const h = prev.matches(HEADING_SEL) ? prev : prev.querySelector?.(HEADING_SEL);
-    if (h?.textContent) return h.textContent.trim();
-    prev = prev.previousElementSibling;
-  }
-  return '';
-} */
+
 //function returning which kind the form belongs to 
 function classifySectionForInput(input){
   //const root = resolveNearestSectionRoot(input);
@@ -2752,42 +2945,6 @@ function decideMappingForInput(input, inputLabel, data, {
   return { mapping: hit, dataKey: tentativeKey, kind: kindToUse, index: idx, reason: 'repeated' };
 }
 */
-//=== NEW: Existing instance counting for minimal Add clicks
-function labelMatchesAnyRegex(label, regexList) {
-  const txt = normalizeFieldNameWithSpace(label || '');
-  return regexList.some(rx => rx.test(txt));
-}
-//finidng how many existing instances are there, calculating by getting container wi th inputs , if inputs>=2 consider as 1 instance.
-/*function countExistingInstancesNear(btn, sectionKey) {
-  const RX = sectionKey === 'education' ? flattenRegexes(eduMappings)
-           : sectionKey === 'experience' ? flattenRegexes(expMappings)
-           : [];
-  if (!RX.length) return 0;
-
-  const scope = btn?.closest?.(CONTAINER_UP_SEL) || document;
-  const CAND_SEL = 'section, fieldset, form, article, ul, ol, li, div';
-
-  const containers = [...scope.querySelectorAll(CAND_SEL)]
-    .filter(isElementVisible)
-    .slice(0, 800);
-
-  let instances = 0;
-  for (const c of containers) {
-    const inputs = [...c.querySelectorAll('input,select,textarea,[role="textbox"],[role="combobox"],[contenteditable="true"]')]
-      .filter(isElementVisible)
-      .slice(0, 80);
-    if (inputs.length === 0) continue;
-    let hits = 0;
-    for (const el of inputs) {
-      const lbl = labelFor(el);
-      if (labelMatchesAnyRegex(lbl, RX)) hits++;
-      if (hits >= 2) break;
-    }
-    if (hits >= 2) instances++;
-  }
-  return instances;
-}
-*/
 // Count indices we’ve already used for this kind (bounded by data length)
 function countExistingByLedger(kind, dataLen){
   const used = usedIndex[kind] || new Set();
@@ -2966,44 +3123,6 @@ function fireInputEvents(el, val){
   // finalizer most libs listen for
   el.dispatchEvent(new Event('change',{bubbles:true,cancelable:true}));
 }
-/*
-function fillReactControlledInput(el, value) {
-  try {
-    const proto = el.__proto__ || Object.getPrototypeOf(el);
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    const setter = desc && desc.set;
-    if (!setter) return;
-
-    const prev = el.value;
-    el.focus();
-
-    // Set via native setter
-    setter.call(el, value);
-
-    // Fire React-compatible event chain
-    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
-
-    // optional: if Ashby still ignores value, try beforeinput
-    if (prev !== value) {
-      el.dispatchEvent(
-        new InputEvent('beforeinput', {
-          bubbles: true,
-          composed: true,
-          inputType: 'insertText',
-          data: value,
-        })
-      );
-    }
-
-    console.log('Ashby react fill done', value);
-  } catch (e) {
-    console.warn('fillReactControlledInput failed', e);
-  }
-}
-*/
-
 // --- updated: just adds mouse + a couple key events; rest unchanged ---
 async function fillInput(el, value, opts = { mapped:false }){
   if(!el || el.disabled || el.readOnly) return;
@@ -3297,45 +3416,59 @@ async function populateFields(inputs, data){
 
 }
 
-///=== AutofillInit
-export async function autofillInit(tokenOrData, dataFromPopup=null){
+/*************************************************
+ * autofillInit — unchanged call flow
+ *************************************************/
+export async function autofillInit(tokenOrData, arg2 = null) {
+  // Back-compat: if arg2 looks like opts, treat it as opts; else it’s dataFromPopup
+  const looksLikeOpts = arg2 && typeof arg2 === 'object' && ('reentry' in arg2);
+  const opts = looksLikeOpts ? (arg2 || {}) : null;
+  const dataFromPopup = looksLikeOpts ? null : arg2;
+
   const data = dataFromPopup ?? tokenOrData;
-  //console.log('[autofillInit] data:', data);
-  if(!data)return; 
+  const reentry = !!opts?.reentry;
+
+  console.log('[autofillInit] data:', data, 'reentry:', reentry);
+  if (!data) { console.log('[autofill] No data provided to autofillInit'); return; }
+
   autofillData = data;
-  await waitForDomStable({ timeoutMs: 2500, quietMs: 180 });
-  let inputs = inputSelection();
-  //let resumeRes = null;
-  let resumeRes = { status: 'skip' };
-  // Only attempt resume attach/wait if we can actually attach in this frame
-  if (canAttachResumeInThisFrame()) {
+
+  await waitForDomStable({ timeoutMs: 1000, quietMs: 180 });
+  const inputs = inputSelection();
+  console.log('[autofill] All inputs (first pass):', inputs.length, inputs.slice(0,70));
+
+  // ---- Minimal re-entry guard ----
+  if (!(reentry && IS_SET1)) {
+    // normal flow OR non-icims re-entry: allow resume parsing
     try {
-      // your function returns {status, elapsedMs, method, ...}
-      resumeRes = await resumeFirstFromInputs(inputs, autofillData, 500);
+      await resumeFirstFromInputs(inputs, autofillData, 500);
     } catch (e) {
-      console.log('[autofillInit] resumeFirstFromInputs error:', e);
-      resumeRes = { status: 'attach-failed', error: String(e) };
+      console.log('No file Input found:', e);
     }
-  }
-   // After resume path, pick settle strategy
-  const s = resumeRes?.status;
-  console.log('[autofillInit] resume status:', s, resumeRes);
-  if (s === 'parsed') {
-    // Expect big re-render after ATS prefill
-    await waitForPageSettle({ urlQuietMs: 900, domQuietMs: 650, timeoutMs: 10000 });
-    await waitForDomStable({ timeoutMs: 2000, quietMs: 150 });
-  } else if (s === 'skip' || s === 'attach-failed' || s === 'no-resume-file-input' || s === 'no-inputs' || s === 'timeout') {
-    // Do not waste 8–30s waiting for resume that didn’t happen here
-    await waitForDomStable({ timeoutMs: 800, quietMs: 120 });
   } else {
-    // Unknown – be conservative, but not too long
-    await waitForDomStable({ timeoutMs: 1200, quietMs: 150 });
+    console.log('[resume] re-entry on SET1 (iCIMS): skipping resume upload');
   }
-  // Re-collect after whatever the page did
-  // inputs = inputSelection();
-  // inputs = await collectInputsWithRetry(3, 300);
-  inputs = await waitForInputs(3, 15, 250);
-  // Fill strategy (you can keep your logic; shown compactly)
+
   await populateFields(inputs, data);
   await processAddSectionsFromData(autofillData);
 }
+
+/*
+export async function autofillInit(tokenOrData, dataFromPopup=null){
+  const data = dataFromPopup ?? tokenOrData;
+  console.log('[autofillInit] data:', data);
+  if(!data){ console.log('[autofill] No data provided to autofillInit'); return; }
+  autofillData = data;
+  await waitForDomStable({ timeoutMs: 1000, quietMs: 180 });
+  const inputs = inputSelection();
+  console.log('[autofill] All inputs (first pass):', inputs.length,inputs.slice(0,70));
+
+  try {
+    await resumeFirstFromInputs(inputs,autofillData, 500); 
+  } catch(e) {
+    console.log('No file Input found:',e);
+  }
+  await populateFields(inputs, data);
+  await processAddSectionsFromData(autofillData);
+}
+*/

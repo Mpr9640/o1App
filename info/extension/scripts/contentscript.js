@@ -16,10 +16,7 @@ const KNOWN_JOB_HOSTS = [
 // ---- Frame role split (works on all hosts) ----
 const IS_TOP_WINDOW = (window.top === window.self);
 //const IS_TOP_WINDOW = (window.top === window.self);
-function log(...args) {
-  const tag = IS_TOP_WINDOW ? '[TOP]' : `[IFRAME ${location.origin}]`;
-  console.log(tag, ...args);
-}
+
 
 // Does this page embed an ATS/vendor iframe?
 function pageHasAtsIframe() {
@@ -437,7 +434,27 @@ function stripLabelishLines(raw) {
 function scoreJDText(t) {
   const L = t.length;
   if (L < 120 || L > 24000) return 0;
-  const kw = ["responsibilities","requirements","nice to have","qualifications","skills","you’ll","you will","about the role","duties"];
+  //const kw = ["responsibilities","requirements","nice to have","qualifications","skills","you’ll","you will","about the role","duties"];
+  const kw = [
+    "job description",
+    "about the role",
+    "role requirements",
+    "responsibilities",
+    "requirements",
+    "qualifications",
+    "skills",
+    "what you'll do",
+    "what you will do",
+    "you are",
+    "what we look for",
+    "preferred qualifications",
+    "minimum qualifications",
+    "must have",
+    "nice to have",
+    "duties",
+    "scope",
+    "you could be a great fit if"
+  ];
   let k = 0; const lc = t.toLowerCase(); for (const w of kw) if (lc.includes(w)) k++;
   const lenBonus = Math.max(0, 10 - Math.abs((L - 3000) / 600));
   return k*5 + lenBonus;
@@ -580,14 +597,14 @@ function waitForDomStable({ timeoutMs = 2500, quietMs = 180 } = {}) {
   });
 }
 async function getJobDescriptionText() {
-  waitForPageSettle({ urlQuietMs: 800, domQuietMs: 600, timeoutMs: 8000 });
+  //waitForPageSettle({ urlQuietMs: 800, domQuietMs: 600, timeoutMs: 8000 });
   // 1B) HARD GUARD: only allow JD on real job pages
   // Only parse where we intend to (ATS iframe when present; else fallback top)
   if (!ROLE_PARSE) return { text: "", anchor: null, source: "none" };
   // early bailout in top window
   if (IS_TOP_WINDOW && pageHasAtsIframe()) {
-    //console.log('[JD] ATS iframe detected — skip JD scan in top window');
-    log('[JD] ATS iframe detected — skip JD scan in top window');
+    //console.log('[JD] ATS iframe detected — skip JD scan in top window')
+    //console.log('[CS] frame?', window.top === window.self ? 'top' : 'iframe', location.href);
     return { text: "", anchor: null, source: "skipped_ats_iframe" };
     // you can set a flag so the rest of your script short-circuits
     //window.__JOB_AID_SKIP_JD__ = true;
@@ -609,10 +626,8 @@ async function getJobDescriptionText() {
     const merged = mergeCandidateTexts(jsonld, 24000);
     if (merged && merged.length > 120) return { text: merged, anchor: document.body, source: 'jsonld' };
   }
-  console.log('getjd func,after collecting jsonld:',jsonld);
   // Stage 2: Semantic DOM (selectors + headings)
   let candidates = [...collectJDBySelectors(), ...collectJDByHeadings()];
-  console.log('getjd func,after collecting seelctors and heading:',candidates);
   if (candidates.length) {
     candidates.forEach(c => c.score = scoreJDText(c.text));
     let good = candidates.filter(c => c.score >= 3);
@@ -634,7 +649,8 @@ async function getJobDescriptionText() {
       const anchorFrom = good[0].el || titleEl || null;
       let anchor = anchorFrom;
       if (anchor) { for (let i=0; i<2 && anchor.parentElement; i++) {
-        const p = anchor.parentElement; if (/SECTION|ARTICLE|DIV/i.test(p.tagName)) anchor = p; else break;
+        const p = anchor.parentElement;if (/SECTION|FORM|UL|LI|FIELDSET|ARTICLE|DIV/i.test(p.tagName)) anchor = p; else break;
+        //anchor = p;
       } }
       const merged = mergeCandidateTexts(good, 24000);
       if (merged && merged.length > 120) return { text: merged, anchor: anchor || null, source: 'dom' };
@@ -935,11 +951,9 @@ function displayMatchingPerecentage(pct, matched) {
 
   const hostId = 'jobAidSkillBannerHost';
   let host = document.getElementById(hostId);
-
   // choose one primary container to own the banner
   const primary = selectPrimaryJobBlock();
   const insertRoot = primary || document.querySelector('main') || document.body;
-
   // find title within the chosen root (not the whole document)
   const titleSel = [
     "[data-automation-id='jobPostingHeader'] h1",".jobsearch-JobInfoHeader-title",".top-card-layout__title",
@@ -1434,21 +1448,38 @@ async function scan() {
     }
   }
 
-
+    // 1B) HARD GUARD: only allow JD on real job pages
+  // Only parse where we intend to (ATS iframe when present; else fallback top)
+  if (!ROLE_PARSE) return { text: "", anchor: null, source: "none" };
+  // early bailout in top window
+  if (IS_TOP_WINDOW && pageHasAtsIframe()) {
+    //console.log('[JD] ATS iframe detected — skip JD scan in top window')
+    //console.log('[CS] frame?', window.top === window.self ? 'top' : 'iframe', location.href);
+    return { text: "", anchor: null, source: "skipped_ats_iframe" };
+    // you can set a flag so the rest of your script short-circuits
+    //window.__JOB_AID_SKIP_JD__ = true;
+  }
   // Extract JD (Schema → DOM → Fallback) — guarded in getJobDescriptionText()
-  const urlKey = location.href.split('#')[0];
-  if (!_didFullJDForUrl.has(urlKey)) {
-    const { text, anchor, source } = await getJobDescriptionText();
-    if (text && text.length > 120) {
-      _didFullJDForUrl.add(urlKey);
-      jdAnchorEl = anchor || null;
-      const h = hash(text);
-      if (h !== lastJDHash) {
-        lastJDHash = h;
-        chrome.runtime.sendMessage({ action: "jdText", text, jobKey: currentJobKey, source, tier: det.tier });
+  if(ROLE_PARSE){
+    //console.log('Role parse in scan function sending jd');
+    const urlKey = location.href.split('#')[0];
+    //console.log('filljdurl in scan funtion:',_didFullJDForUrl);
+    //console.log('URL key in scan funtion:',urlKey);
+    if (!_didFullJDForUrl.has(urlKey)) {    
+      const { text, anchor, source } = await getJobDescriptionText();
+      if (text && text.length > 120) {
+        _didFullJDForUrl.add(urlKey);
+        jdAnchorEl = anchor || null;
+        const h = hash(text);
+        if (h !== lastJDHash) {
+          lastJDHash = h;
+          chrome.runtime.sendMessage({ action: "jdText", text, jobKey: currentJobKey, source, tier: det.tier });
+        }
       }
     }
+
   }
+
 }
 
 async function pushJobContext(meta, { confidence = 0.8 } = {}) {
@@ -1529,10 +1560,10 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) runD
    ========================= */
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'forceScanNow') {
+  /*if (request.action === 'forceScanNow') {
     (async () => { try{await runDetectionNow(); sendResponse?.({ ok: true, jobKey: currentJobKey, url: location.href });} catch(e){sendResponse?.({ ok: false, error: String(e?.message || e), url: location.href });}})();
     return true;
-  }
+  }*/
   
   if (request.action === 'getDetectionState') {
     // on-demand quick read (re-run a lightweight detect without side-effects)
@@ -1581,6 +1612,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Only render banner if we’re on a MEDIUM/HIGH page (icon present implies allowUI)
     //if (!document.getElementById('jobAidIcon')) return true;
     // IMPORTANT: never return true without responding
+    //console.log('1. In contentscript.js getskillmatchstate percentage,matchedwords and allskills:',percentage,matchedWords,allSkills);
     if (!document.getElementById('jobAidIcon')) {
       sendResponse?.({ status: 'no_ui' }); // <— respond
       return; // sync
@@ -1592,24 +1624,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   /*
   if (request.action === 'openSkillsPanel') {
     if (jdAnchorEl) {
+      sendResponse?.({ ok: true, where: 'jd' });
+      console.log('jd anchor:',jdAnchorEl);
       jdAnchorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
       jdAnchorEl.style.transition = 'box-shadow 0.6s ease';
       const prev = jdAnchorEl.style.boxShadow;
-      jdAnchorEl.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.35)';
-      setTimeout(() => { jdAnchorEl.style.boxShadow = prev || 'none'; }, 1200);
-      sendResponse?.({ ok: true, where: 'jd' });
-      return; //true;
+      jdAnchorEl.style.boxShadow = '0 0 0 3px rgba(5, 80, 243, 0.35)';
+      setTimeout(() => { jdAnchorEl.style.boxShadow = prev || 'none'; }, 1500);
+      return true; //true;
     }
     const host = document.getElementById('jobAidSkillBannerHost');
     if (host) { host.scrollIntoView({ behavior: 'smooth', block: 'center' }); sendResponse?.({ ok: true, where: 'banner' }); }
     else { sendResponse?.({ ok: false, reason: 'no_anchor' }); }
-    return;// true;
-  }*/
+    return true;// true;
+  }
+  */
   if (request.action === 'openSkillsPanel'){
-    const host = document.getElementById('jobAidSkillBannerHost');
-    // 💡 ADD THIS LOGGING:
-    //console.log('openSkillsPanel received. jdAnchorEl status:', !!jdAnchorEl); 
-    //console.log('openSkillsPanel received. host status:', !!host);
     if (jdAnchorEl) {
       // 1) Reply immediately so popup sees ok:true.
       sendResponse?.({ ok: true, where: 'jd' });
@@ -1619,12 +1649,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           jdAnchorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
           jdAnchorEl.style.transition = 'box-shadow 0.6s ease';
           const prev = jdAnchorEl.style.boxShadow;
-          jdAnchorEl.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.35)';
-          setTimeout(() => { jdAnchorEl.style.boxShadow = prev || 'none'; }, 1200);
+          jdAnchorEl.style.boxShadow = '0 0 0 3px rgba(235, 37, 37, 0.35)';
+          setTimeout(() => { jdAnchorEl.style.boxShadow = prev || 'none'; }, 1500);
         } catch {}
       }, 0);
       return true; // keep port open while we run the async side effect (safe, even though we already replied)
     } 
+    const host = document.getElementById('jobAidSkillBannerHost');
     if (host) {
       sendResponse?.({ ok: true, where: 'banner' });
       setTimeout(() => {
@@ -1637,9 +1668,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse?.({ ok: false, reason: 'no_anchor' });
     return; // synchronous no-op is fine her
   }
-
+  
   if (request.action === 'getSkillMatchState') {
+    waitForDomStable({ timeoutMs: 2500, quietMs: 180 });
     const meta = { url: location.href, title: getJobTitleStrict(), company: getCompanyName(), location: getLocationText(), logoUrl: getCompanyLogoUrl() };
+    //console.log('2. In contentscript.js getskillmatchstate percentage,matchedwords and allskills:',percentage,matchedWords,allSkills);
     sendResponse?.({ percentage, matchedWords, allSkills, meta, jobKey: currentJobKey });
     return;// true;
   }
@@ -1665,3 +1698,149 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return;// true;
   }
 });
+/***********************************************
+ * contentscript.js — Autofill re-entry watcher
+ * Injects autofill.bundle.js on refresh if a
+ * pending resume upload was in progress.
+ ***********************************************/
+(function(){
+  const SET1_HOSTS = new Set(['icims.com']);
+  const PENDING_KEY    = 'ja_resume_pending_v1';
+  const REENTRY_FLAG   = '__JA_AUTOFILL_REENTRY_IN_PROGRESS__';
+  const INJECTED_ID    = 'autofill-script';
+  const BUNDLE_PATH    = 'autofill.bundle.js';
+  const REENTRY_TTL_MS = 60 * 1000;
+
+  // ---- helpers (top-like host/page so iframes work) ----
+  function topLikeHost() {
+    try {
+      if (window.top === window) return (location.hostname || '').toLowerCase();
+      return window.top.location.hostname.toLowerCase(); // throws if cross-origin
+    } catch {
+      try { if (document.referrer) return new URL(document.referrer).hostname.toLowerCase(); } catch {}
+      return (location.hostname || '').toLowerCase();
+    }
+  }
+  function topLikePageKey() {
+    try {
+      if (window.top === window) return `${location.origin}${location.pathname}`;
+      const o = window.top.location; return `${o.origin}${o.pathname}`;
+    } catch {
+      try { if (document.referrer) { const u = new URL(document.referrer); return `${u.origin}${u.pathname}`; } } catch {}
+      return `${location.origin}${location.pathname}`;
+    }
+  }
+  function hostInHost(set, host) {
+    const h = (host || '').toLowerCase();
+    for (const d of set) if (h === d || h.endsWith(`.${d}`)) return true;
+    return false;
+  }
+  const IS_SET1_TOP = hostInHost(SET1_HOSTS, topLikeHost());
+  if (!IS_SET1_TOP) return;
+
+  function hasRealInputs(){ return !!document.querySelector('input,select,textarea'); }
+
+  function waitForPageSettle({ urlQuietMs=800, domQuietMs=600, timeoutMs=8000 } = {}) {
+    const startUrl = location.href;
+    let lastChange = performance.now();
+    const mo = new MutationObserver(()=>{ lastChange = performance.now(); });
+    try { mo.observe(document.documentElement, { childList:true, subtree:true, attributes:true }); } catch {}
+    const t0 = performance.now();
+    return new Promise(resolve=>{
+      const timer = setInterval(()=>{
+        const now = performance.now();
+        const urlChanged = location.href !== startUrl;
+        const domIdle = (now - lastChange) >= domQuietMs;
+        const urlIdle = urlChanged ? ((now - lastChange) >= urlQuietMs) : true;
+        if ((domIdle && urlIdle) || (now - t0) > timeoutMs) {
+          clearInterval(timer); try { mo.disconnect(); } catch {}
+          requestAnimationFrame(resolve);
+        }
+      },120);
+    });
+  }
+
+  // ---- talk to service worker session helpers ----
+  async function sessionGet(key) {
+    const res = await chrome.runtime.sendMessage({ type: 'SESSION_GET', payload: key });
+    return res?.ok ? (res.data?.[key] ?? null) : null;
+  }
+  async function sessionRemove(key) {
+    await chrome.runtime.sendMessage({ type: 'SESSION_REMOVE', payload: key });
+  }
+
+  function looselyMatchesPage(pendingPage, currentTopLikePage) {
+    if (!pendingPage || !currentTopLikePage) return false;
+    if (pendingPage === currentTopLikePage) return true;
+    try {
+      const p = new URL(pendingPage), c = new URL(currentTopLikePage);
+      if (p.origin !== c.origin) return false;
+      const pp = p.pathname.split('/').slice(0,3).join('/');
+      const cp = c.pathname.split('/').slice(0,3).join('/');
+      return pp === cp;
+    } catch { return false; }
+  }
+
+  async function maybeReenterAutofill(){
+    console.log('[reentry] 1. start (topLikeHost=%s, frameHost=%s)', topLikeHost(), (location.hostname||''));
+    if (!hasRealInputs()) { console.log('[reentry] no inputs in this frame; skipping'); return; }
+    if (window[REENTRY_FLAG]) { console.log('[reentry] flag set; skipping'); return; }
+    window[REENTRY_FLAG] = true;
+
+    console.log('[reentry] 2. host ok & executor frame chosen');
+
+    const pending = await sessionGet(PENDING_KEY);
+    if (!pending) { console.log('[reentry] no pending key in session; abort'); return; }
+    console.log('[reentry] 3. pending found:', pending);
+
+    const topKey = topLikePageKey();
+    if (!looselyMatchesPage(pending.page, topKey)) {
+      console.log('[reentry] 4. page mismatch; pending=%s currentTop=%s', pending.page, topKey);
+      return;
+    }
+    console.log('[reentry] 4. page ok');
+
+    if ((Date.now() - pending.t) > REENTRY_TTL_MS) { console.log('[reentry] 5. ttl expired'); return; }
+    console.log('[reentry] 5. ttl ok');
+
+    const { autofillData } = await new Promise(r => chrome.storage.local.get('autofillData', r));
+    if (!autofillData) { console.log('[reentry] 6. no autofillData; abort'); return; }
+    console.log('[reentry] 6. have autofillData');
+
+    await waitForPageSettle();
+
+    const url = chrome.runtime.getURL(BUNDLE_PATH);
+
+    const callInit = async () => {
+      try {
+        const mod = await import(url);
+        if (mod?.autofillInit) {
+          console.log('[reentry] 8. calling autofillInit');
+          //await mod.autofillInit(autofillData, null);
+          await mod.autofillInit(autofillData, { reentry: true });
+          // clear pending once we successfully re-enter
+          await sessionRemove(PENDING_KEY);
+        } else {
+          console.error('[reentry] autofillInit export not found');
+        }
+      } catch (e) { console.error('[reentry] import/module failed', e); }
+    };
+
+    if (document.getElementById(INJECTED_ID)) {
+      console.log('[reentry] 7a. bundle already injected');
+      await callInit();
+      return;
+    }
+
+    console.log('[reentry] 7b. injecting bundle');
+    const script = document.createElement('script');
+    script.type = 'module';
+    script.src = url;
+    script.id = INJECTED_ID;
+    script.onload = callInit;
+    script.onerror = () => console.error('[reentry] failed to load bundle:', url);
+    document.documentElement.appendChild(script);
+  }
+
+  maybeReenterAutofill();
+})();

@@ -15,7 +15,9 @@
     "activeTab",
     "scripting",
     "notifications",
-    "offscreen"
+    "offscreen",
+    "webNavigation",
+    "tabs"
   ],
   "host_permissions": [
     "http://localhost:8000/*",

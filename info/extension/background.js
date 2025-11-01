@@ -1,6 +1,7 @@
 // backround.js — canonical URLs + instant applied cache + ML ranking + sticky job context
 //ajid-application journey id
 import apiClient from "../src/axios.js";
+const API_BASE_URL = 'http://localhost:8000'; // or your prod base
 import {
   extractSkillCandidates,
   getUserSkillsSet,
@@ -12,7 +13,7 @@ import {
 
 const USE_REMOTE_TAXONOMY = false;
 //const log = (...a) => DEBUG && console.log('[bg]', ...a);
-const ATS_HOSTS_RX = /(greenhouse\.io|boards\.greenhouse\.io|jobs\.lever\.co|myworkdayjobs\.com|icims\.com|taleo\.net|oraclecloud\.com|smartrecruiters\.com|apply\.workable\.com|bamboohr\.com|successfactors\.com|adp\.com|app\.jazz\.co|applytojob\.com)/i;
+const ATS_HOSTS_RX = /(greenhouse\.io|boards\.greenhouse\.io|jobs\.lever\.co|myworkdayjobs\.com|icims\.com|taleo\.net|oraclecloud\.com|smartrecruiters\.com|apply\.workable\.com|bamboohr\.com|successfactors\.com|adp\.com|app\.jazz\.co|applytojob\.com|ashbyhq\.com|jobs\.ashbyhq\.com)/i;
 const PLATFORM_HOSTS_RX = /(linkedin\.com|indeed\.com|glassdoor\.com|monster\.com|dice\.com|ziprecruiter\.com|careerbuilder\.com|simplyhired\.com|jobvite\.com|idealist\.org|jobhire\.ai)/i;
 const isATS = (u) => { try { return ATS_HOSTS_RX.test(new URL(u).hostname); } catch { return false; } };
 const isPLATFORM = (u) => { try { return PLATFORM_HOSTS_RX.test(new URL(u).hostname); } catch { return false; } };
@@ -358,6 +359,7 @@ function sendToFrame(tabId, frameId, message) {
 // Generic proxy: forward a message to the primary frame of the active tab
 async function proxyToPrimaryFrame(tabId, innerMessage, timeoutMs = 2000) {
   const frameId = await findPrimaryFrameId(tabId);
+  console.log('[proxy] tab', tabId, '-> frame', frameId, innerMessage.action);
   let done = false;
   return await new Promise(async (resolve) => {
     const t = setTimeout(() => { if (!done) { done = true; resolve({ ok:false, error:'timeout' }); } }, timeoutMs);
@@ -453,21 +455,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         return { res, canonical, savedAt };
       }
+      /*
       // Let popup route messages to the correct (ATS) frame.
       if (request.action === 'proxyToPrimaryFrame') {
-        const tabId = sender.tab?.id;
+        //const tabId = sender.tab?.id;
+        const tabId = request.tabId || sender.tab?.id;
         if (!tabId) { sendResponse?.({ ok:false, error:'no tab' }); return; }
 
         // Forward the payload (e.g. { action:'openSkillsPanel' } or { action:'getSkillMatchState' })
-        const inner = request.payload && typeof request.payload === 'object'
-          ? request.payload
-          : { action: request.targetAction || 'openSkillsPanel' };
+        const inner = (request.payload && typeof request.payload === 'object')
+          ? request.payload:{};
+          //: { action: request.targetAction || 'openSkillsPanel' };
 
         const resp = await proxyToPrimaryFrame(tabId, inner, request.timeoutMs || 2000);
         sendResponse?.(resp || { ok:false });
         return;
       }
-
+      */
       if (request.action === 'canonicalizeUrl') {
         const canonical = canonicalJobUrl(request.url || sender?.url || '');
         sendResponse?.({ canonical });
@@ -511,12 +515,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       if (request.action === 'openPopup') {
+        /*
         if (sender.tab?.id) {
           try {
             await new Promise((resolve) => chrome.tabs.sendMessage(sender.tab.id, { action: 'forceScanNow' }, () => resolve()));
             await new Promise(r => setTimeout(r, 150));
           } catch {}
-        }
+        }*/
         chrome.action.openPopup();
         fetchDataFromBackend();
         sendResponse({ success: true, message: 'Popup opened.' });
@@ -578,17 +583,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: true, data: response.data });
         return;
       }
-      if (request.action === 'fetchResume') {
-        const file = await fetchResumeFile(request.fileUrl);
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = () => sendResponse({ success: true, fileData: reader.result, filename: file.name, type: file.type || "application/pdf" });
-          reader.onerror = () => sendResponse({ success: false, error: 'Failed to read file' });
-          reader.readAsDataURL(file);
-        } else sendResponse({ success: false, error: 'Failed to fetch file' });
-        return true;
-      }
-      /*
+
+      
       if (request.action === 'jdText' && request.text) {
         const work = (async () => {
           const jdSkills = await extractSkillsHybrid(request.text);
@@ -603,7 +599,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         try { await timeout(work, 2000); } catch {}
         sendResponse({ status: 'Job text processed.' });
         return;
-      }*/
+      }
+     /*
       if (request.action === 'jdText' && request.text) {
         const work = (async () => {
           const jdSkills = await extractSkillsHybrid(request.text);
@@ -624,7 +621,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ status: 'Job text processed.' });
         return;
       }
-
+      */
       if (request.action === 'journeyStart') {
         const tabId = sender.tab?.id;
         const snap = request?.snapshot || {};
@@ -697,7 +694,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Canonicalize both the submission page and the referrer
         const pageCanon = canonicalJobUrl(request.pageCanonical || sender.url || '');
         const refCanon  = canonicalJobUrl(request.referrer || '');
-        
+  
         // Logic to select the preferred Canonical URL for primary tracking (Platform > ATS)
         //const preferCanon = (refCanon && isPlatform(refCanon)) ? refCanon : pageCanon;
         const preferCanon = (refCanon)? refCanon : pageCanon
@@ -899,7 +896,43 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         return;
       }
-
+      // add near the top of the switch in the first listener
+      if (request.action === 'fetchResume') {
+        const file = await fetchResumeFile(request.fileUrl);
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = () => sendResponse({ success: true, fileData: reader.result, filename: file.name, type: file.type || "application/pdf" });
+          reader.onerror = () => sendResponse({ success: false, error: 'Failed to read file' });
+          reader.readAsDataURL(file);
+        } else sendResponse({ success: false, error: 'Failed to fetch file' });
+        return true;
+      }
+     /*
+      if (request.action === 'fetchResume') {
+        const { fileData, filename, type } = await fetchResumeFile(request.fileUrl);
+        sendResponse?.({ success: true, fileData, filename, type });
+        return;
+      }*/
+      if (request.type === 'SESSION_SET') {
+        await sessionSet(request.payload || {});
+        sendResponse?.({ ok: true });
+        return;
+      }
+      if (request.type === 'SESSION_GET') {
+        const data = await sessionGet(request.payload ?? null);
+        sendResponse?.({ ok: true, data });
+        return;
+      }
+      if (request.type === 'SESSION_REMOVE') {
+        await sessionRemove(request.payload);
+        sendResponse?.({ ok: true });
+        return;
+      }
+      if (request.type === 'SESSION_CLEAR') {
+        await sessionClear();
+        sendResponse?.({ ok: true });
+        return;
+      }
       if (request.action === 'checkAppliedForUrl') {
         const reqCanon = canonicalJobUrlCached(preferCtxCanonical(sender, request.url || ''));
         try {
@@ -979,19 +1012,83 @@ async function fetchDataFromBackend(){
   }
 }
 
+// --- helpers
+async function blobToDataURL(blob) {
+  const buf = await blob.arrayBuffer();
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const mime = blob.type || 'application/octet-stream';
+  return `data:${mime};base64,${b64}`;
+}
+function guessFilename(url, headers) {
+  try {
+    const cd = headers.get?.('content-disposition') || '';
+    const m = cd.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+    if (m) return decodeURIComponent(m[1] || m[2]);
+  } catch {}
+  try {
+    const u = new URL(url);
+    const last = u.pathname.split('/').pop();
+    if (last) return last;
+  } catch {}
+  return 'resume.pdf';
+}
 async function fetchResumeFile(fileUrl){
   try{
     const res=await fetch(fileUrl); if(!res.ok) return null;
     const blob=await res.blob(); const filename=fileUrl.split('/').pop()||'autofilled_file';
     return new File([blob], filename, { type: blob.type });
   }catch(e){ console.error('Error fetching resume file:',e); return null;}
+} 
+/*
+async function fetchResumeFile(fileUrl) {
+  // Accept absolute or API-relative
+  let url = fileUrl || '';
+  if (!/^https?:\/\//i.test(url)) url = `${API_BASE_URL}${url}`;
+  const resp = await fetch(url, { credentials: 'omit' });
+  if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`);
+  const blob = await resp.blob();
+  const fileData = await blobToDataURL(blob);
+  const filename = guessFilename(url, resp.headers);
+  return { fileData, filename, type: blob.type || 'application/pdf' };
 }
+*/
+// --- session storage helpers (use chrome.storage.session; no-ops fallback just in case)
+const hasSession = !!(chrome.storage && chrome.storage.session);
+const memSession = new Map();
+
+async function sessionSet(obj) {
+  if (hasSession) return chrome.storage.session.set(obj);
+  Object.entries(obj || {}).forEach(([k, v]) => memSession.set(k, v));
+}
+async function sessionGet(keyOrNull) {
+  if (hasSession) {
+    return chrome.storage.session.get(keyOrNull ?? null);
+  }
+  if (!keyOrNull) {
+    const out = {};
+    for (const [k, v] of memSession.entries()) out[k] = v;
+    return out;
+  }
+  return { [keyOrNull]: memSession.get(keyOrNull) };
+}
+async function sessionRemove(keyOrKeys) {
+  if (hasSession) return chrome.storage.session.remove(keyOrKeys);
+  const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
+  keys.forEach(k => memSession.delete(k));
+}
+async function sessionClear() {
+  if (hasSession) return chrome.storage.session.clear();
+  memSession.clear();
+}
+
+
+
 
 /* =================== Housekeeping =================== */
 chrome.tabs.onRemoved.addListener((tabId) => { liActiveMetaByTab.delete(tabId); });
 chrome.tabs.onUpdated.addListener((tabId, info) => { if (info.status === 'loading') liActiveMetaByTab.delete(tabId); });
 
-setInterval(fetchDataFromBackend, 10 * 60 * 1000);
+setInterval(fetchDataFromBackend, 3 * 60 * 1000);
 console.log('Background service worker initialized.');
 
 

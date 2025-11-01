@@ -36,7 +36,7 @@ async function init() {
   const ctxMeta = ctx?.meta || {};
   const ctxFirstCanon = ctx?.first_canonical || "";
   const ctxCanon = ctx?.canonical || ctxFirstCanon || "";
-  console.log('1.In popup ctx received',ctxMeta,ctxFirstCanon,ctxCanon);
+  //console.log('1.In popup ctx received',ctxMeta,ctxFirstCanon,ctxCanon);
   // Ask the tab if UI should be allowed (journey-only)
   //let det = null;
   //if (tab?.id) {
@@ -49,7 +49,7 @@ async function init() {
   let meta = { title: "", company: "", location: "", logoUrl: "", url: ctxFirstCanon || ctxCanon || (tab?.url || "") };
   meta = nonEmptyMerge(meta, ctxMeta);
   if (!meta.url) meta.url = ctxFirstCanon || ctxCanon || tab?.url || "";
-  console.log('3. IN popup after merge the meta',meta);
+  //console.log('3. IN popup after merge the meta',meta);
   let showCard = false;
   let renderCanon = ""; // which canonical URL the card should open
   let tabCanon = "";
@@ -59,22 +59,22 @@ async function init() {
     // Current tab's canonicalized URL
     const canRespTab = await sendBg({ action: "canonicalizeUrl", url: tab?.url || "" });
     tabCanon = canRespTab?.canonical || tab?.url || "";
-    console.log('4. In popup the canonicalize url of present tab',tabCanon);
+    //console.log('4. In popup the canonicalize url of present tab',tabCanon);
     // Ask the page to score itself (uses hasApply/TCL/JD under the hood)
     let scoreResp = null;
     if (tab?.id) {
-      //scoreResp = await sendTab(tab.id, { action: "getCanonicalScore" }).catch(() => null);
-      scoreResp = await sendToPrimaryFrame(tab.id, { action: "getCanonicalScore" }).catch(() => null);
+      scoreResp = await sendTab(tab.id, { action: "getCanonicalScore" }).catch(() => null);
+      //scoreResp = await sendToPrimaryFrame(tab.id, { action: "getCanonicalScore" }).catch(() => null);
     }
     // Treat ≥0.6 as “true canonical detail page” (TCL/JD and/or Apply visible)
     isTrueCanonicalPage = !!(scoreResp && typeof scoreResp.score === "number" && scoreResp.score >= 0.6);
-    console.log('5. in popup checking the present page is true canonical page or not',isTrueCanonicalPage);
+    //console.log('5. in popup checking the present page is true canonical page or not',isTrueCanonicalPage);
     const journeyStartCanon = ctx?.first_canonical || ""; // frozen at first real detail page
     if (isTrueCanonicalPage) {
       // still on the actual detail page → render that page’s canonical
       showCard = true;
       renderCanon = tabCanon || journeyStartCanon || "";   //2.fix
-      console.log('6. In popup the present page is canonical than showing card,render canon is ',renderCanon);
+      //console.log('6. In popup the present page is canonical than showing card,render canon is ',renderCanon);
     } else if (journeyStartCanon) {
       // in the application flow (ATS/thank-you/etc.) → render the journey start canonical
       showCard = true;
@@ -127,8 +127,8 @@ async function init() {
   //);
   //const companyMeta = tab?.id ? await sendTab(tab.id, { action: "getActiveCompanyMeta" }).catch(()=>null) : null;
   //if (companyMeta) meta = nonEmptyMerge(meta, companyMeta);
-  //const companyMeta = tab?.id ? await sendTab(tab.id, { action: "getActiveCompanyMeta" }).catch(()=>null) : null;
-  const companyMeta = tab?.id ? await sendToPrimaryFrame(tab.id, { action: "getActiveCompanyMeta" }).catch(()=>null) : null;
+  const companyMeta = tab?.id ? await sendTab(tab.id, { action: "getActiveCompanyMeta" }).catch(()=>null) : null;
+  //const companyMeta = tab?.id ? await sendToPrimaryFrame(tab.id, { action: "getActiveCompanyMeta" }).catch(()=>null) : null;
   console.log('10. In popup , getting active company meta',companyMeta);
   if (companyMeta && (companyMeta.title || companyMeta.company || companyMeta.location || companyMeta.logoUrl || companyMeta.url)) {
     meta = nonEmptyMerge(meta, companyMeta);
@@ -214,7 +214,7 @@ async function init() {
     scoreEl.hidden = true; matchesRow.hidden = true; othersRow.hidden = true;
   }
     */
-  /*
+  
   async function getSkillStateWithRetry(tabId) {
     let s = await sendTab(tabId, { action: "getSkillMatchState" });
     if (!s || !Array.isArray(s.allSkills) || s.allSkills.length === 0) {
@@ -222,7 +222,8 @@ async function init() {
       s = await sendTab(tabId, { action: "getSkillMatchState" });
     }
     return s;
-  }*/
+  }
+ /*
   async function getSkillStateWithRetry(tabId) {
     let s = await sendToPrimaryFrame(tabId, { action: "getSkillMatchState" });
     if (!s || !Array.isArray(s.allSkills) || s.allSkills.length === 0) {
@@ -231,7 +232,7 @@ async function init() {
     }
     return s;
   }
-
+  */
   requestAnimationFrame(async () => {
     if (!tab?.id) return;
     //const state = await sendTab(tab.id, { action: "getSkillMatchState" });
@@ -239,7 +240,7 @@ async function init() {
     const pct   = Number(state?.percentage || 0);
     const match = Array.isArray(state?.matchedWords) ? state.matchedWords : [];
     const all   = Array.isArray(state?.allSkills) ? state.allSkills : [];
-
+    console.log('14.skillmatch reqauest in popup percentage,match and all',pct,match,all);
     if (all.length > 0) {
       scoreEl.hidden = false; matchesRow.hidden = false; othersRow.hidden = false;
       scoreEl.textContent = `Skill match: ${Math.round(pct)}%`;
@@ -253,26 +254,56 @@ async function init() {
       scoreEl.hidden = true; matchesRow.hidden = true; othersRow.hidden = true;
     }
   });
-
+  /*
   // Buttons
   openAppBtn.addEventListener("click", async () => { await chrome.tabs.create({ url: APP_HOME }); window.close(); });
-   /*
   //viewSkillsBtn.disabled = !allowUI;
   viewSkillsBtn.addEventListener("click", async () => {
     if (!tab?.id) return;
     const res = await sendTab(tab.id, { action: "openSkillsPanel" });
-    if (res?.ok === false){ alert("No Jd found.");}
-    //if (!res?.ok) alert("Job description not found on this page.");
+    if(res?.ok === false){
+      alert('NO JD FOUND');
+    }
     window.close();
+  
   });
   */
+ // popup.js (FINAL ROBUST VERSION)
+
+  viewSkillsBtn.addEventListener("click", async () => {
+      if (!tab?.id) return;
+      
+      try {
+          // Await the response from the content script (This is the line that might throw an error/reject)
+          const res = await sendTab(tab.id, { action: "openSkillsPanel" });
+          
+          // 1. SUCCESS PATH: The content script responded explicitly with success.
+          if (res?.ok === true) {
+              window.close();
+              return; // Exit after successful close
+          }
+          
+          // 2. EXPLICIT FAILURE PATH: The content script responded explicitly with failure (e.g., {ok: false, ...})
+          // If we reach here, res?.ok is explicitly false, or res is null/undefined due to some earlier issue.
+          alert('NO JD FOUND');
+          
+      } catch (error) {
+          // 3. REJECTION/CONNECTION FAILURE PATH: The message port closed, the tab was gone, or the content script didn't reply properly.
+          console.error("Messaging failed (Port closed or other error):", error);
+          alert('NO JD FOUND (Messaging Error)');
+      }
+      
+      // Crucially, if there was an error or explicit failure, we don't close the window here.
+  });
+
+ /*
   viewSkillsBtn.addEventListener("click", async () => {
     if (!tab?.id) return;
     const res = await sendToPrimaryFrame(tab.id, { action: "openSkillsPanel" });
     if (res?.ok === false) { alert("No Jd found."); }
     window.close();
   });
-
+  */
   autofillBtn.addEventListener("click", () => runAutofill());
 
   // Manual “Mark applied” with in-popup chooser
@@ -511,7 +542,8 @@ function sendTab(tabId, payload, timeoutMs = 2000) {
 // Proxy any request to the tab's "primary" frame (ATS iframe if present)
 function sendToPrimaryFrame(tabId, payload, timeoutMs = 2000) {
   // background.js implements action:'proxyToPrimaryFrame'
-  return sendBg({ action: 'proxyToPrimaryFrame', payload, timeoutMs });
+  //return sendBg(tabId,{ action: 'proxyToPrimaryFrame', payload, timeoutMs });
+  return sendBg({ action: 'proxyToPrimaryFrame', tabId, payload, timeoutMs });
 }
 
 function getActiveTab() { return new Promise((resolve, reject) => { chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => { if (chrome.runtime.lastError || !tabs || !tabs.length) return reject("No active tab"); resolve(tabs[0]); }); }); }
@@ -548,7 +580,6 @@ function showNotice(msg = "Added") {
     setTimeout(() => t.remove(), 220);
   }, 1400);
 }
-/*
 async function runAutofill() {
   try {
     const tab = await getActiveTab();
@@ -572,44 +603,51 @@ async function runAutofill() {
       args: [bundleURL, "", data]
     });
   } catch (error) { console.error(error); }
-} */
+} 
+console.log("popup.js loaded");
+
+
+
+/*
 async function runAutofill() {
   try {
-    const tab = await getActiveTab();
-    const data = await new Promise((resolve) => {
-      chrome.storage.local.get("autofillData", (r) => resolve(r.autofillData || null));
-    });
+    // get active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error("No active tab");
 
-    // 1) Inject the probe into the page's MAIN world (CSP-safe)
+    // get data to pass into autofillInit
+    const { autofillData = null } = await chrome.storage.local.get("autofillData");
+
+    // 1) In ISOLATED world, bootstrap and dynamic-import your module
     await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
-      world: 'MAIN',
-      files: ['pageprobe.js']  // emitted by webpack (see step 3)
-    });
+      world: "ISOLATED",
+      func: (data, modulePath) => {
+        // per-frame guard to avoid duplicate init
+        if (globalThis.__JA_AUTOFRAME_BUSY__) return;
+        globalThis.__JA_AUTOFRAME_BUSY__ = true;
 
-    // 2) Import and run your ESM autofill bundle in the ISOLATED world (also CSP-safe)
-    const bundleURL = chrome.runtime.getURL("autofill.bundle.js");
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: true },
-      world: 'ISOLATED',
-      func: async (url, token, payload) => {
-        try {
-          const mod = await import(url);
-          if (mod && typeof mod.autofillInit === 'function') {
-            await mod.autofillInit(token, payload);
-          } else {
-            console.error('Autofill Init export is not found.');
-          }
-        } catch (err) {
-          console.error('Error importing module:', err);
-        }
+        const url = chrome.runtime.getURL(modulePath);
+        import(url)
+          .then((mod) => {
+            if (mod && typeof mod.autofillInit === "function") {
+              // token not used; pass empty string to keep signature compatible
+              return mod.autofillInit("", data);
+            } else {
+              console.error("[runAutofill] autofillInit export not found in", url);
+            }
+          })
+          .catch((err) => {
+            console.error("[runAutofill] dynamic import failed:", err);
+          })
+          .finally(() => {
+            // allow future manual re-runs if needed
+            setTimeout(() => { try { delete globalThis.__JA_AUTOFRAME_BUSY__; } catch {} }, 2000);
+          });
       },
-      args: [bundleURL, "", data]
+      args: [autofillData, "autofill.bundle.js"], // <-- keep this file name in sync with your build
     });
-
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error("[runAutofill] failed:", err);
   }
-}
-
-console.log("popup.js loaded");
+}*/
