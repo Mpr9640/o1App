@@ -2402,11 +2402,12 @@ function shouldSkipTopInputScan() {
   return false;
 }
 function inputSelection(){
+  /*
   // 🚫 Skip scanning if we’re the top window and ATS iframe exists
   if (shouldSkipTopInputScan()) {
     console.log('[inputSelection] ATS iframe detected — skip input scanning in top window');
     return [];
-  }
+  }*/
   const roots = collectAllRoots(); //isIcimsHost ? [getIcimsFormRoot()] : 
   const all = roots.flatMap(r => collectInputsIn(r));
 

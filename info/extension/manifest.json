@@ -64,6 +64,8 @@
     {
       "resources": [
         "images/icon.jpeg",
+        "images/autofillicon.jpg",
+        "images/homeicon.png",
         "autofill.bundle.js",
         "offscreen/offscreen.html",
         "offscreen/offscreen.bootstrap.js"

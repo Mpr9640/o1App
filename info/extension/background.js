@@ -960,7 +960,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         return;
       }
-      sendResponse({ ok: false, error: 'Unknown request type' });
     }
     catch (e) {
       console.error('Background listener error:', e);

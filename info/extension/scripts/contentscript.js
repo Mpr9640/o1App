@@ -33,7 +33,7 @@ function pageHasAtsIframe() {
 // - UI (icon/banner triggers) only on top window
 // - Parsing (JD, skills, forms) inside ATS iframe when present; otherwise fallback to top
 const ROLE_UI = IS_TOP_WINDOW;
-const ROLE_PARSE = pageHasAtsIframe() ? !IS_TOP_WINDOW : true;
+const ROLE_PARSE =(pageHasAtsIframe() && !isGreenhouseHost) ? !IS_TOP_WINDOW : true;
 
 
 /* Negative & hard-block guards */
@@ -596,6 +596,7 @@ function waitForDomStable({ timeoutMs = 2500, quietMs = 180 } = {}) {
     }
   });
 }
+const isGreenhouseHost = /(?:^|\.)greenhouse\.io$/i.test(location.hostname);
 async function getJobDescriptionText() {
   //waitForPageSettle({ urlQuietMs: 800, domQuietMs: 600, timeoutMs: 8000 });
   // 1B) HARD GUARD: only allow JD on real job pages
@@ -840,56 +841,11 @@ function getJobTitleStrict() {
 const isIcimsHost = /(?:^|\.)icims\.com$/i.test(location.hostname);
 /*
 function showIcon() {
-  // acquire per-origin+path lock; if another same-origin frame owns UI, bail
-  if(isIcimsHost && !acquireUiLock() ){
-    return;
-  }
-  //if (!acquireUiLock()) return;
-  if (document.getElementById('jobAidIcon')) return;
-
-  const iconUrl = chrome.runtime.getURL('images/icon.jpeg');
-  const icon = document.createElement('img');
-  icon.src = iconUrl; icon.id = 'jobAidIcon';
-  Object.assign(icon.style, {
-    position:'fixed', left:'20px', top:'20px', width:'48px', height:'48px',
-    zIndex: '2147483647', cursor:'pointer', userSelect:'none', pointerEvents:'auto',
-  });
-  let isDragging=false, moved=false, offsetX=0, offsetY=0;
-  icon.addEventListener('pointerdown', e => {
-    isDragging = true; moved = false;
-    offsetX = e.clientX - icon.offsetLeft; offsetY = e.clientY - icon.offsetTop;
-    icon.setPointerCapture(e.pointerId);
-    icon.style.cursor = 'grabbing'; e.preventDefault();
-  });
-  icon.addEventListener('pointermove', e => {
-    if (!isDragging) return; moved = true;
-    let x = e.clientX - offsetX; let y = e.clientY - offsetY;
-    const maxX = window.innerWidth - icon.offsetWidth; const maxY = window.innerHeight - icon.offsetHeight;
-    x = clamp(x, 0, maxX); y = clamp(y, 0, maxY);
-    icon.style.left = x + 'px'; icon.style.top = y + 'px';
-  });
-  icon.addEventListener('pointerup', e => {
-    if (!isDragging) return; isDragging = false;
-    icon.releasePointerCapture(e.pointerId); icon.style.cursor = 'pointer';
-  });
-  icon.addEventListener('click', e => {
-    if (moved) { e.stopImmediatePropagation(); return; }
-    chrome.runtime.sendMessage({ action: 'openPopup' });
-  });
-  document.body.appendChild(icon);
-  try { window.__JobAidIconShown = true; } catch {}
-  try { if (typeof window.initATSWatchers === 'function') window.initATSWatchers(); } catch {}
-}
-*/
-function showIcon() {
   // Only the top window owns UI
   if (!ROLE_UI) return;
-
   // Acquire per-origin+path lock to avoid double icons across same-origin iframes
   //if (!acquireUiLock()) return;
-
   if (document.getElementById('jobAidIcon')) return;
-
   const iconUrl = chrome.runtime.getURL('images/icon.jpeg');
   const icon = document.createElement('img');
   icon.src = iconUrl; icon.id = 'jobAidIcon';
@@ -932,6 +888,387 @@ function removeIcon() {
     releaseUiLock(); // release owner so another frame (if any) may take over when appropriate
   }
 }*/
+//showIcon(): touch toggle, delayed hover-close, use session flag, show toast
+// ==========================
+// Job Aid content script UI
+// (no bg broadcasts, no polling)
+// ==========================
+
+// ------- ICON URLS -------
+const AUTOFIL_ICON_URL = chrome.runtime.getURL('images/autofillicon.jpg'); // update if needed
+const HOME_ICON_URL    = chrome.runtime.getURL('images/homeicon.png');     // update if needed
+
+// BG messaging with timeout (popup-compatible pattern)
+function sendBg(payload, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const t = setTimeout(() => { if (!done) { done = true; resolve({ ok:false, error:'timeout' }); } }, timeoutMs);
+    try {
+      chrome.runtime.sendMessage(payload, (resp) => {
+        if (done) return;
+        done = true; clearTimeout(t);
+        if (chrome.runtime.lastError) return resolve({ ok:false, error: chrome.runtime.lastError.message });
+        resolve(resp);
+      });
+    } catch (e) {
+      if (done) return;
+      done = true; clearTimeout(t);
+      resolve({ ok:false, error: String(e?.message || e) });
+    }
+  });
+}
+
+// --- Pull best-guess job meta (similar to popup flow) ---
+async function getBestJobMeta() {
+  // 1) Page globals you might set
+  const g = (typeof window !== 'undefined') ? window : {};
+  const pageGuess =
+    g.__jobAidCanonical ||   // { title, company, location, url, logoUrl? }
+    g.__JobAidCurrentJob ||  // any custom global you keep
+    {};
+
+  // 2) Sticky context from background (journey)
+  let ctx = null;
+  try { const r = await sendBg({ action: "getJobContext" }); ctx = r?.ctx || null; } catch {}
+  const ctxMeta = ctx?.meta || {};
+  const ctxFirstCanon = ctx?.first_canonical || "";
+  const ctxCanon = ctx?.canonical || ctxFirstCanon || "";
+
+  // 3) Merge: ctx → pageGuess (page wins for explicitly set fields)
+  const meta = nonEmptyMerge(
+    { title:"", company:"", location:"", logoUrl:"", url: ctxFirstCanon || ctxCanon || location.href },
+    ctxMeta
+  );
+  const merged = nonEmptyMerge(meta, pageGuess);
+
+  // 4) Canonicalize via background (same as popup)
+  try {
+    const can = await sendBg({ action: "canonicalizeUrl", url: merged.url || location.href });
+    merged.url = can?.canonical || merged.url || location.href;
+  } catch {}
+
+  return merged;
+}
+
+function nonEmptyMerge(base, patch) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") out[k] = v;
+  }
+  return out;
+}
+
+// ------- UI HELPERS -------
+function createMenuItem(id, iconUrl, label, className) {
+  const item = document.createElement('div');
+  item.id = id;
+  item.className = 'jobAidMenuItem ' + className;
+  item.title = label;
+  Object.assign(item.style, {
+    width: '32px', height: '32px', borderRadius: '50%', background: '#111827',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    cursor: 'pointer', position: 'absolute', transition: 'transform 0.3s ease, background-color 0.1s',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+    zIndex: '2147483647'
+  });
+  const img = document.createElement('img');
+  img.src = iconUrl;
+  img.style.width = '20px';
+  img.style.height = '20px';
+  img.style.objectFit = 'contain';
+  img.style.filter = 'none';                 // keep original colors (fix visibility)
+  img.alt = label || '';
+  img.referrerPolicy = 'no-referrer';
+  img.decoding = 'async';
+  img.loading = 'eager';
+  img.onerror = () => {
+    console.warn('[JobAid] Icon failed to load:', iconUrl);
+    item.textContent = label?.[0] || '•';
+    item.style.color = '#fff';
+    item.style.font = '12px system-ui';
+  };
+
+  item.appendChild(img);
+  return item;
+}
+
+function createRoad(isLeft) {
+  const road = document.createElement('div');
+  road.className = 'jobAidMenuRoad';
+  Object.assign(road.style, {
+    position: 'absolute', top: '50%', transform: 'translateY(-50%)',
+    height: '3px',
+    background: '#3b82f6',
+    transition: 'width 0.3s ease, opacity 0.3s ease',
+    opacity: '0',
+    width: '0px'
+  });
+  const iconWidth = 48;
+  road.style[isLeft ? 'left' : 'right'] = `${iconWidth}px`;
+  return road;
+}
+
+// Minimal toast (used when clicking the green badge)
+function showJobAppliedToast(appliedAt) {
+  const txt = appliedAt ? `Applied before: ${new Date(appliedAt).toLocaleString()}` : 'Not applied yet';
+  const id = "__jobAidToast__";
+  let t = document.getElementById(id);
+  if (!t) {
+    t = document.createElement("div");
+    t.id = id;
+    Object.assign(t.style, {
+      position: "fixed",
+      left: "50%", transform: "translateX(-50%)",
+      bottom: "16px",
+      background: "#111827", color: "#fff",
+      padding: "8px 12px",
+      borderRadius: "10px",
+      font: "14px system-ui",
+      zIndex: 2147483648,
+      boxShadow: "0 6px 22px rgba(0,0,0,.24)",
+      opacity: "0",
+      transition: "opacity .3s ease, transform .3s ease"
+    });
+    document.body.appendChild(t);
+  }
+  t.textContent = txt;
+  t.style.opacity = "1";
+  t.style.transform = "translateX(-50%) translateY(-20px)";
+  setTimeout(() => {
+    t.style.opacity = "0";
+    t.style.transform = "translateX(-50%) translateY(0)";
+    setTimeout(() => t.remove(), 400);
+  }, 2500);
+}
+
+// ------- APPLIED BADGE (GREEN DOT) -------
+let __jobAidAppliedBadge = null;
+let __jobAidAppliedAt = null;
+
+function ensureAppliedBadge() {
+  if (__jobAidAppliedBadge) return __jobAidAppliedBadge;
+  const b = document.createElement('div');
+  b.id = '__jobAidAppliedBadge';
+  Object.assign(b.style, {
+    position: 'fixed',
+    width: '12px', height: '12px', borderRadius: '50%',
+    background: '#22c55e', border: '2px solid #ffffff',
+    boxShadow: '0 0 0 1px rgba(0,0,0,.08), 0 2px 8px rgba(0,0,0,.25)',
+    zIndex: '2147483648', cursor: 'pointer', pointerEvents: 'auto',
+    display: 'none'
+  });
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (__jobAidAppliedAt) showJobAppliedToast(__jobAidAppliedAt);
+  });
+  document.body.appendChild(b);
+  __jobAidAppliedBadge = b;
+  return b;
+}
+
+function syncAppliedBadgePosition(iconEl) {
+  if (!__jobAidAppliedBadge || !iconEl) return;
+  const r = iconEl.getBoundingClientRect();
+  const offsetX = -4; // top-right outside rim
+  const offsetY = -4;
+  __jobAidAppliedBadge.style.left = (r.left + r.width + offsetX) + 'px';
+  __jobAidAppliedBadge.style.top  = (r.top  + offsetY) + 'px';
+}
+
+function setAppliedBadgeVisible(visible, appliedAt, iconEl) {
+  const b = ensureAppliedBadge();
+  if (visible) {
+    __jobAidAppliedAt = appliedAt || null;
+    b.title = appliedAt ? `Applied on ${new Date(appliedAt).toLocaleString()}` : 'Applied';
+    b.style.display = 'block';
+    syncAppliedBadgePosition(iconEl);
+  } else {
+    __jobAidAppliedAt = null;
+    b.style.display = 'none';
+  }
+}
+
+// === Ask background for applied status (uses your checkAppliedForUrl) ===
+async function updateAppliedUI(iconEl) {
+  try {
+    const meta = await getBestJobMeta();
+    const can = await sendBg({ action: "canonicalizeUrl", url: meta.url || location.href });
+    const canonical = can?.canonical || (meta.url || location.href);
+    const resp = await sendBg({
+      action: 'checkAppliedForUrl',
+      url: canonical,
+      title: meta.title || "",
+      company: meta.company || "",
+      location: meta.location || ""
+    });
+    const appliedAt = resp?.applied_at || null;
+    setAppliedBadgeVisible(!!appliedAt, appliedAt, iconEl);
+  } catch {
+    setAppliedBadgeVisible(false, null, iconEl);
+  }
+}
+
+// ------- MAIN ICON + MENU -------
+function showIcon() {
+  if (!ROLE_UI) return;
+  if (document.getElementById('jobAidIcon')) return;
+
+  const iconUrl = chrome.runtime.getURL('images/icon.jpeg');
+  const icon = document.createElement('img');
+  icon.src = iconUrl; icon.id = 'jobAidIcon';
+  Object.assign(icon.style, {
+    position:'fixed', left:'20px', top:'20px', width:'48px', height:'48px',
+    zIndex: '2147483647', cursor:'pointer', userSelect:'none', pointerEvents:'auto',
+    borderRadius: '50%',
+  });
+
+  const menuContainer = document.createElement('div');
+  menuContainer.id = 'jobAidMenuContainer';
+  Object.assign(menuContainer.style, {
+    position: 'fixed',
+    left: '20px', top: '20px',
+    width: '48px', height: '48px',
+    pointerEvents: 'none', opacity: '0',
+    transition: 'opacity 0.2s ease',
+    zIndex: '2147483647',
+  });
+
+  const padding = 6;
+  const iconSize = 32;
+  const roadLength = 18;
+  const moveDistance = padding + roadLength;
+  const iconCenterOffset = iconSize / 2;
+
+  // Left: Autofill
+  const autofillIcon = createMenuItem('jobAidAutofillIcon', AUTOFIL_ICON_URL, 'Autofill', 'autofill-menu-icon');
+  autofillIcon.style.left = `calc(50% - ${moveDistance + iconCenterOffset}px)`;
+  autofillIcon.style.top  = `calc(50% - ${iconCenterOffset}px)`;
+  const autofillRoad = createRoad(true);
+  autofillRoad.style.left = `${48 + padding}px`;
+  autofillRoad.style.width = `${roadLength}px`;
+
+  // Right: Home
+  const homeIcon = createMenuItem('jobAidHomeIcon', HOME_ICON_URL, 'Home Page', 'home-menu-icon');
+  homeIcon.style.right = `calc(50% - ${moveDistance + iconCenterOffset}px)`;
+  homeIcon.style.top   = `calc(50% - ${iconCenterOffset}px)`;
+  const homeRoad = createRoad(false);
+  homeRoad.style.right = `${48 + padding}px`;
+  homeRoad.style.width = `${roadLength}px`;
+
+  menuContainer.appendChild(autofillRoad);
+  menuContainer.appendChild(homeRoad);
+  menuContainer.appendChild(autofillIcon);
+  menuContainer.appendChild(homeIcon);
+
+  // Menu hover logic
+  let menuVisible = false;
+  const hideMenu = () => {
+    if (!menuVisible) return;
+    menuVisible = false;
+    menuContainer.style.opacity = '0';
+    menuContainer.style.pointerEvents = 'none';
+    autofillIcon.style.transform = 'translateX(0)';
+    homeIcon.style.transform = 'translateX(0)';
+    autofillRoad.style.width = '0px'; autofillRoad.style.opacity = '0';
+    homeRoad.style.width = '0px';     homeRoad.style.opacity   = '0';
+  };
+  const showMenu = () => {
+    if (menuVisible) return;
+    menuVisible = true;
+    menuContainer.style.opacity = '1';
+    menuContainer.style.pointerEvents = 'auto';
+    autofillIcon.style.transform = `translateX(-${roadLength}px)`;
+    homeIcon.style.transform     = `translateX(${roadLength}px)`;
+    autofillRoad.style.width = `${roadLength}px`; autofillRoad.style.opacity = '1';
+    homeRoad.style.width   = `${roadLength}px`;   homeRoad.style.opacity   = '1';
+  };
+  icon.addEventListener('pointerenter', showMenu);
+  icon.addEventListener('pointerleave', hideMenu);
+  menuContainer.addEventListener('pointerenter', showMenu);
+  menuContainer.addEventListener('pointerleave', hideMenu);
+
+  // Drag logic
+  let isDragging=false, moved=false, offsetX=0, offsetY=0;
+  const updateMenuPosition = (x, y) => {
+    menuContainer.style.left = x + 'px';
+    menuContainer.style.top  = y + 'px';
+    syncAppliedBadgePosition(icon);
+  };
+  icon.addEventListener('pointerdown', e => {
+    isDragging = true; moved = false;
+    offsetX = e.clientX - icon.offsetLeft; offsetY = e.clientY - icon.offsetTop;
+    icon.setPointerCapture(e.pointerId);
+    icon.style.cursor = 'grabbing'; e.preventDefault();
+    hideMenu();
+  });
+  icon.addEventListener('pointermove', e => {
+    if (!isDragging) return; moved = true;
+    let x = e.clientX - offsetX; let y = e.clientY - offsetY;
+    const maxX = window.innerWidth - icon.offsetWidth; const maxY = window.innerHeight - icon.offsetHeight;
+    x = clamp(x, 0, maxX); y = clamp(y, 0, maxY);
+    icon.style.left = x + 'px'; icon.style.top = y + 'px';
+    updateMenuPosition(x, y);
+    syncAppliedBadgePosition(icon);
+  });
+  icon.addEventListener('pointerup', e => {
+    if (!isDragging) return; isDragging = false;
+    icon.releasePointerCapture(e.pointerId); icon.style.cursor = 'pointer';
+    syncAppliedBadgePosition(icon);
+  });
+
+  // Main icon click → open popup
+  icon.addEventListener('click', e => {
+    if (moved) { e.stopImmediatePropagation(); return; }
+    chrome.runtime.sendMessage({ action: 'openPopup' });
+    hideMenu();
+  });
+
+  // ---- Option B: handle clicks locally (no background listeners needed) ----
+  homeIcon.addEventListener('click', e => {
+    e.stopImmediatePropagation();
+    hideMenu();
+    // open app home in a new tab
+    window.open('http://localhost:3000/home', '_blank');
+  });
+
+  autofillIcon.addEventListener('click', async e => {
+    e.stopImmediatePropagation();
+    hideMenu();
+    try {
+      const bundleURL = chrome.runtime.getURL('autofill.bundle.js');
+      const mod = await import(bundleURL);
+      if (mod?.autofillInit) {
+        const { autofillData = null } = await chrome.storage.local.get('autofillData');
+        mod.autofillInit("", autofillData);
+      } else {
+        console.error('autofillInit export not found in', bundleURL);
+      }
+    } catch (err) {
+      console.error('Autofill failed:', err);
+    }
+  });
+
+  // Append + initial positioning
+  document.body.appendChild(menuContainer);
+  document.body.appendChild(icon);
+  updateMenuPosition(icon.offsetLeft, icon.offsetTop);
+
+  // Initial applied-state fetch + badge render
+  updateAppliedUI(icon);
+
+  try { window.__JobAidIconShown = true; } catch {}
+  try { if (typeof window.initATSWatchers === 'function') window.initATSWatchers(); } catch {}
+}
+
+// Kick off the icon on load (guarded by ROLE_UI and duplicate check)
+//try { showIcon(); } catch (e) { /* no-op */ }
+
+
+/*function clamp(num, min, max) {
+    return Math.min(Math.max(num, min), max);
+}
+// Note: You may need to add the clamp function if it's not already defined in the file.
+
 function removeIcon() {
   const icon = document.getElementById('jobAidIcon');
   if (icon) icon.remove();
@@ -1452,7 +1789,7 @@ async function scan() {
   // Only parse where we intend to (ATS iframe when present; else fallback top)
   if (!ROLE_PARSE) return { text: "", anchor: null, source: "none" };
   // early bailout in top window
-  if (IS_TOP_WINDOW && pageHasAtsIframe()) {
+  if (IS_TOP_WINDOW && pageHasAtsIframe()&& !isGreenhouseHost) {
     //console.log('[JD] ATS iframe detected — skip JD scan in top window')
     //console.log('[CS] frame?', window.top === window.self ? 'top' : 'iframe', location.href);
     return { text: "", anchor: null, source: "skipped_ats_iframe" };
