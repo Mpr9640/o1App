@@ -13,10 +13,10 @@ const KNOWN_JOB_HOSTS = [
   /(^|\.)linkedin\.com$/i, /indeed\.com/i, /dice\.com/i, /glassdoor\.com/i,
   /monster\.com/i, /careerbuilder\.com/i, /jobright\.ai/i, ...ATS_HOST_MAP
 ];
+const isGreenhouseHost = /(?:^|\.)greenhouse\.io$/i.test(location.hostname);
 // ---- Frame role split (works on all hosts) ----
 const IS_TOP_WINDOW = (window.top === window.self);
 //const IS_TOP_WINDOW = (window.top === window.self);
-
 
 // Does this page embed an ATS/vendor iframe?
 function pageHasAtsIframe() {
@@ -261,7 +261,7 @@ function liDetailRoot() {
       || null;
 }
 
-const HEADING_RE = /(?:^|\b)(?:job\s*description|about\s*the\s*role|role\s*requirements|responsibilities|requirements|qualifications|skills|what\s+(?:you(?:’|')?ll|you\s+will)\s+do|you\s+are|what\s+we\s+look\s+for|preferred\s+qualifications|minimum\s+qualifications|must\s+have|nice\s+to\s+have|duties|scope)(?=\b|\s*[:—-])/i;
+const HEADING_RE = /(?:^|\b)(?:job\s*description|about\s*the\s*role|role\s*requirements|responsibilities|requirements|qualifications|skills|what\s+(?:you(?:’|')?ll|you\s+will)\s+do|you\s+are|what\s+we\s+look\s+for|preferred\s+qualifications|minimum\s+qualifications|(should|must)\s+have|nice\s+to\s+have|duties|scope|)(?=\b|\s*[:—-])/i;
 
 const JD_SELECTORS = [
   '.jobs-description__container','.jobs-box__html-content',
@@ -444,12 +444,15 @@ function scoreJDText(t) {
     "qualifications",
     "skills",
     "what you'll do",
+    "what you’ll do",
     "what you will do",
     "you are",
     "what we look for",
+    "what we are looking for",
     "preferred qualifications",
     "minimum qualifications",
     "must have",
+    "should have",
     "nice to have",
     "duties",
     "scope",
@@ -596,19 +599,12 @@ function waitForDomStable({ timeoutMs = 2500, quietMs = 180 } = {}) {
     }
   });
 }
-const isGreenhouseHost = /(?:^|\.)greenhouse\.io$/i.test(location.hostname);
+
 async function getJobDescriptionText() {
-  //waitForPageSettle({ urlQuietMs: 800, domQuietMs: 600, timeoutMs: 8000 });
-  // 1B) HARD GUARD: only allow JD on real job pages
-  // Only parse where we intend to (ATS iframe when present; else fallback top)
   if (!ROLE_PARSE) return { text: "", anchor: null, source: "none" };
   // early bailout in top window
-  if (IS_TOP_WINDOW && pageHasAtsIframe()) {
-    //console.log('[JD] ATS iframe detected — skip JD scan in top window')
-    //console.log('[CS] frame?', window.top === window.self ? 'top' : 'iframe', location.href);
+  if (IS_TOP_WINDOW && pageHasAtsIframe() && !isGreenhouseHost) {
     return { text: "", anchor: null, source: "skipped_ats_iframe" };
-    // you can set a flag so the rest of your script short-circuits
-    //window.__JOB_AID_SKIP_JD__ = true;
   }
   // We are either inside the iframe, or on a page without an ATS iframe.
   // If you want to start *after* the JD block renders, add a tiny stabilizer:
@@ -617,35 +613,49 @@ async function getJobDescriptionText() {
     const det = await detectJobPage();
     if (!det.allowUI) return { text: "", anchor: null, source: "none" };
   } catch {}
-
   // Do not return JD on auth/stepper/confirmation pages
   if (looksLikeAuthOrStepper()) return { text: "", anchor: null, source: 'none' };
-
   // Stage 1: Schema.org JSON-LD (gold)
   const jsonld = collectJDFromJSONLD();
   if (jsonld.length) {
     const merged = mergeCandidateTexts(jsonld, 24000);
+    console.log("1.in cs the jd from jsonld",merged);
     if (merged && merged.length > 120) return { text: merged, anchor: document.body, source: 'jsonld' };
   }
   // Stage 2: Semantic DOM (selectors + headings)
   let candidates = [...collectJDBySelectors(), ...collectJDByHeadings()];
   if (candidates.length) {
     candidates.forEach(c => c.score = scoreJDText(c.text));
+    console.log('2.In cs the jd text we are extracting',candidates.text);
     let good = candidates.filter(c => c.score >= 3);
+    console.log("3. In cs the jd text",good);
 
-    // Optional ML ranking (background can decide)
+   // Optional ML ranking (background can decide)
     const titleEl = findJobTitleEl();
     const detailsOk = !!(titleEl || getCompanyName() || getLocationText());
     if (detailsOk && good.length) {
       try {
-        const payload = { action: 'rankJDCandidates', items: good.map(g => g.text.slice(0, 1200)) };
-        const resp = await new Promise(res => chrome.runtime.sendMessage(payload, r => res(r||null)));
-        if (resp && typeof resp.bestIndex === 'number' && good[resp.bestIndex]) {
-          good = [good[resp.bestIndex], ...good.filter((_,i)=> i!==resp.bestIndex)];
+        const items = (good || []).map(g => (g.text || '').slice(0, 1200));
+        if (items.length) {
+          const payload = { action: 'rankJDCandidates', items };
+          const resp = await new Promise((resolve) => {
+            let done = false;
+            const timer = setTimeout(() => { if (!done) { done = true; resolve(null); } }, 3500);
+            chrome.runtime.sendMessage(payload, (r) => {
+              if (done) return;
+              clearTimeout(timer);
+              done = true;
+              resolve(r || null);
+            });
+          });
+
+          if (resp?.ok === true && Number.isInteger(resp.bestIndex) && good[resp.bestIndex]) {
+            good = [ good[resp.bestIndex], ...good.filter((_, i) => i !== resp.bestIndex) ];
+          }
         }
       } catch {}
-    }
 
+    }
     if (good.length) {
       const anchorFrom = good[0].el || titleEl || null;
       let anchor = anchorFrom;
@@ -657,7 +667,6 @@ async function getJobDescriptionText() {
       if (merged && merged.length > 120) return { text: merged, anchor: anchor || null, source: 'dom' };
     }
   }
-
   // Stage 3: Keyword/context fallback
   const fallback = extractPageTextSansForms();
   if (fallback && fallback.length > 300) return { text: fallback, anchor: findJobTitleEl() || null, source: 'fallback' };
@@ -1117,7 +1126,7 @@ function showIcon() {
   const icon = document.createElement('img');
   icon.src = iconUrl; icon.id = 'jobAidIcon';
   Object.assign(icon.style, {
-    position:'fixed', left:'20px', top:'20px', width:'48px', height:'48px',
+    position:'fixed', left:'40px', top:'40px', width:'48px', height:'48px',
     zIndex: '2147483647', cursor:'pointer', userSelect:'none', pointerEvents:'auto',
     borderRadius: '50%',
   });
@@ -1790,11 +1799,7 @@ async function scan() {
   if (!ROLE_PARSE) return { text: "", anchor: null, source: "none" };
   // early bailout in top window
   if (IS_TOP_WINDOW && pageHasAtsIframe()&& !isGreenhouseHost) {
-    //console.log('[JD] ATS iframe detected — skip JD scan in top window')
-    //console.log('[CS] frame?', window.top === window.self ? 'top' : 'iframe', location.href);
     return { text: "", anchor: null, source: "skipped_ats_iframe" };
-    // you can set a flag so the rest of your script short-circuits
-    //window.__JOB_AID_SKIP_JD__ = true;
   }
   // Extract JD (Schema → DOM → Fallback) — guarded in getJobDescriptionText()
   if(ROLE_PARSE){

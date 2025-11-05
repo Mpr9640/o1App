@@ -553,17 +553,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return;
       }
       if (request.action === 'rankJDCandidates') {
-        const items = Array.isArray(request.items) ? request.items.slice(0, 6) : [];
-        let bestIndex = 0, bestScore = -1;
-        const outs = await Promise.all(items.map(t =>
-          callOffscreen('offscreen.zs', { text: t, labels: ['job_description','not_job_description'] })
-        ));
-        outs.forEach((r, i) => {
-          const s = (r?.ok && Array.isArray(r.data?.scores)) ? (r.data.scores[0] || 0) : 0;
-          if (s > bestScore) { bestScore = s; bestIndex = i; }
-        });
-        sendResponse?.({ ok: true, bestIndex });
-        return;
+        try {
+          const items = Array.isArray(request.items) ? request.items.slice(0, 6) : [];
+          if (!items.length) { sendResponse?.({ ok: true, bestIndex: 0 }); return; }
+
+          // Run ZS for each candidate concurrently
+          const outs = await Promise.all(
+            items.map((t) =>
+              callOffscreen('offscreen.zs', {
+                text: t,
+                labels: ['job_description', 'not_job_description'],
+              })
+            )
+          );
+
+          // IMPORTANT: pick the score of 'job_description' specifically
+          let bestIndex = 0, bestScore = -1;
+          outs.forEach((r, i) => {
+            let s = 0;
+            if (r?.ok && Array.isArray(r.data?.labels) && Array.isArray(r.data?.scores)) {
+              const li = r.data.labels.findIndex((lbl) => lbl === 'job_description');
+              s = (li >= 0) ? (Number(r.data.scores[li]) || 0) : 0;
+            }
+            if (s > bestScore) { bestScore = s; bestIndex = i; }
+          });
+
+          sendResponse?.({ ok: true, bestIndex });
+        } catch (e) {
+          sendResponse?.({ ok: false, error: String(e?.message || e) });
+        }
       }
 
       // Semantic best-match for autofill
@@ -586,6 +604,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       
       if (request.action === 'jdText' && request.text) {
+        console.log('the jd text:',request.text);
         const work = (async () => {
           const jdSkills = await extractSkillsHybrid(request.text);
           const userSkillSet = await getUserSkillsSet();
