@@ -312,7 +312,7 @@ const HomePage = () => {
 
               <div className={styles.charts}>
                 <div className={styles.chartBlock}>
-                  <div className={styles.chartTitle}>Overview (Donut)</div>
+                  <div className={styles.chartTitle}>Overview</div>
                   <Donut data={selectedWeek?.data || {}} />
                 </div>
                 <div className={styles.chartBlock}>

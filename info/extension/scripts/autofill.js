@@ -2372,7 +2372,21 @@ function collectAllRoots(){
   }
   return roots;
 }
-/*
+
+function shouldSkipTopInputScan() {
+  if (window.top !== window) return false; // we are inside an iframe already
+  const frames = document.querySelectorAll('iframe'); //,frame
+  for (const f of frames) {
+    try {
+      const src = f.src || '';
+      if (/(workday\.com|icims\.com|lever\.co|greenhouse\.io|smartrecruiters\.com|taleo\.net|oraclecloud\.com|bamboohr\.com)/i.test(src)) {
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
 function inputSelection(){
   const roots = collectAllRoots();
   const all = roots.flatMap(r => collectInputsIn(r));
@@ -2387,20 +2401,8 @@ function inputSelection(){
   console.log('Total inputs collected', uniq.length, uniq.slice(0,70));
   return uniq;
 }
-*/
-function shouldSkipTopInputScan() {
-  if (window.top !== window) return false; // we are inside an iframe already
-  const frames = document.querySelectorAll('iframe'); //,frame
-  for (const f of frames) {
-    try {
-      const src = f.src || '';
-      if (/(workday\.com|icims\.com|lever\.co|greenhouse\.io|smartrecruiters\.com|taleo\.net|oraclecloud\.com|bamboohr\.com)/i.test(src)) {
-        return true;
-      }
-    } catch {}
-  }
-  return false;
-}
+
+/*
 function inputSelection(){
   /*
   // 🚫 Skip scanning if we’re the top window and ATS iframe exists
@@ -2408,6 +2410,7 @@ function inputSelection(){
     console.log('[inputSelection] ATS iframe detected — skip input scanning in top window');
     return [];
   }*/
+ /*
   const roots = collectAllRoots(); //isIcimsHost ? [getIcimsFormRoot()] : 
   const all = roots.flatMap(r => collectInputsIn(r));
 
@@ -2431,7 +2434,7 @@ function inputSelection(){
   //console.log('Total inputs collected', uniq.length, uniq.slice(0,70));
   return uniq;
 }
-
+*/
 // =====================
 // Repeated section discovery (Add buttons, titles)
 //EDUCATION =====
@@ -2469,7 +2472,8 @@ export const resMappings = [
   { keywords: [/\b(?:(?:residence|residential|permanent|present|curren|home)\s*)?(?:city|town)\b/i], dataKey: 'residencecity' },
   { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)?state\b(?!\s*of\b)/i], dataKey: 'residencestate' },
   { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)?country\b(?!\s*(?:code|dial|calling)\b)/i], dataKey: 'residencecountry' },
-  { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)(?:zip|postal|area)\s*code\b/i], dataKey: 'residencezipcode'},
+  //{ keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)(?:zip|postal|area)\s*code\b/i], dataKey: 'residencezipcode'},
+  {keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)?(?:zip|postal|area)\s*code\b/i], dataKey: 'residencezipcode'},
   { keywords: [/\b(?:(?:residence|residential|permanent|present|current|home)\s*)?(?:location)\b/i], dataKey: 'residencelocation' }
 ]
 const TITLE_BUCKETS = {
@@ -3422,6 +3426,8 @@ async function populateFields(inputs, data){
  *************************************************/
 export async function autofillInit(tokenOrData, arg2 = null) {
   // Back-compat: if arg2 looks like opts, treat it as opts; else it’s dataFromPopup
+  window.__JA_busyAutofill = true;
+  pauseDetections(2000); // quiet period while we interact
   const looksLikeOpts = arg2 && typeof arg2 === 'object' && ('reentry' in arg2);
   const opts = looksLikeOpts ? (arg2 || {}) : null;
   const dataFromPopup = looksLikeOpts ? null : arg2;

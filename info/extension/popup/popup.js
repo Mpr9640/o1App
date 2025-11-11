@@ -1,6 +1,4 @@
-// popup.js — strict canonical gating + TCL-aware applied check + in-popup chooser for manual marking
-// (updated: 2025-09-25)
-
+//NOTES: using manual pick canonical . applied job action if not than using mark applied action.
 document.addEventListener("DOMContentLoaded", init);
 
 const APP_HOME = "http://localhost:3000/home";
@@ -36,7 +34,7 @@ async function init() {
   const ctxMeta = ctx?.meta || {};
   const ctxFirstCanon = ctx?.first_canonical || "";
   const ctxCanon = ctx?.canonical || ctxFirstCanon || "";
-  //console.log('1.In popup ctx received',ctxMeta,ctxFirstCanon,ctxCanon);
+  console.log('1.In popup ctx received',ctxMeta,ctxFirstCanon,ctxCanon);
   // Ask the tab if UI should be allowed (journey-only)
   //let det = null;
   //if (tab?.id) {
@@ -49,7 +47,7 @@ async function init() {
   let meta = { title: "", company: "", location: "", logoUrl: "", url: ctxFirstCanon || ctxCanon || (tab?.url || "") };
   meta = nonEmptyMerge(meta, ctxMeta);
   if (!meta.url) meta.url = ctxFirstCanon || ctxCanon || tab?.url || "";
-  //console.log('3. IN popup after merge the meta',meta);
+  console.log('3. IN popup after merge the meta',meta);
   let showCard = false;
   let renderCanon = ""; // which canonical URL the card should open
   let tabCanon = "";
@@ -59,7 +57,7 @@ async function init() {
     // Current tab's canonicalized URL
     const canRespTab = await sendBg({ action: "canonicalizeUrl", url: tab?.url || "" });
     tabCanon = canRespTab?.canonical || tab?.url || "";
-    //console.log('4. In popup the canonicalize url of present tab',tabCanon);
+    console.log('4. In popup the canonicalize url of present tab',tabCanon);
     // Ask the page to score itself (uses hasApply/TCL/JD under the hood)
     let scoreResp = null;
     if (tab?.id) {
@@ -68,13 +66,13 @@ async function init() {
     }
     // Treat ≥0.6 as “true canonical detail page” (TCL/JD and/or Apply visible)
     isTrueCanonicalPage = !!(scoreResp && typeof scoreResp.score === "number" && scoreResp.score >= 0.6);
-    //console.log('5. in popup checking the present page is true canonical page or not',isTrueCanonicalPage);
+    console.log('5. in popup checking the present page is true canonical page or not',isTrueCanonicalPage);
     const journeyStartCanon = ctx?.first_canonical || ""; // frozen at first real detail page
     if (isTrueCanonicalPage) {
       // still on the actual detail page → render that page’s canonical
       showCard = true;
       renderCanon = tabCanon || journeyStartCanon || "";   //2.fix
-      //console.log('6. In popup the present page is canonical than showing card,render canon is ',renderCanon);
+      console.log('6. In popup the present page is canonical than showing card,render canon is ',renderCanon);
     } else if (journeyStartCanon) {
       // in the application flow (ATS/thank-you/etc.) → render the journey start canonical
       showCard = true;
@@ -101,10 +99,10 @@ async function init() {
 
   // Lookup applied (URL or TCL)
   let appliedText = "Not applied yet";
-  if (meta.url) {
+  if (tabCanon/*meta.url*/) {
     try {
-      const canResp = await sendBg({ action: "canonicalizeUrl", url: meta.url });
-      const canonical = canResp?.canonical || meta.url;
+      const canResp = await sendBg({ action: "canonicalizeUrl", url: tabCanon/*meta.url*/ });
+      const canonical = canResp?.canonical || tabCanon || meta.url;
       const res = await sendBg({
         action: "checkAppliedForUrl",
         url: canonical,
@@ -405,12 +403,10 @@ async function openCanonicalChooser(items, appliedEl, markAppliedBtn, ctxMeta) {
       </div>`;
     const pick = async () => {
       setBusy(markAppliedBtn, true, "Saving…");
-
       // 1) Try background's manual helper (if it both saves + cleans up)
       let ok = false;
       let appliedAt = Date.now();
       let err = null;
-
       try {
         const r = await sendBg({ action: 'manualPickCanonical', url: it.url });
         if (r?.ok) {
@@ -420,7 +416,6 @@ async function openCanonicalChooser(items, appliedEl, markAppliedBtn, ctxMeta) {
       } catch (e) {
         err = e;
       }
-
       // 2) If manualPickCanonical not available or failed, fall back to direct save
       if (!ok) {
         try {
@@ -432,7 +427,6 @@ async function openCanonicalChooser(items, appliedEl, markAppliedBtn, ctxMeta) {
           err = e;
         }
       }
-
       // 3) Regardless, request deletion from the canonical store (idempotent on bg)
       try {
         await sendBg({ action: 'canonicalListDelete', url: it.url });
@@ -446,7 +440,6 @@ async function openCanonicalChooser(items, appliedEl, markAppliedBtn, ctxMeta) {
         // local UI cleanup: remove the picked card, toast, and close if empty
         div.remove();
         showNotice("Added");
-
         // if no more candidates, close the popup
         if (!content.querySelector('.job-card')) {
           setTimeout(() => window.close(), 400);
@@ -520,7 +513,6 @@ function sendBg(payload, timeoutMs = 2000) {
     }
   });
 }
-
 function sendTab(tabId, payload, timeoutMs = 2000) {
   return new Promise((resolve) => {
     let done = false;
@@ -580,6 +572,12 @@ function showNotice(msg = "Added") {
     setTimeout(() => t.remove(), 220);
   }, 1400);
 }
+window.__JA_busyAutofill = false;   // true while autofill runs
+let __JA_pauseUntil = 0;
+
+function pauseDetections(ms = 1200) {
+  __JA_pauseUntil = Math.max(__JA_pauseUntil, performance.now() + ms);
+}
 async function runAutofill() {
   try {
     const tab = await getActiveTab();
@@ -593,7 +591,14 @@ async function runAutofill() {
         script.onload = () => {
           import(url).then((module) => {
             if (module && typeof module.autofillInit === "function") {
-              try { module.autofillInit(token, data); } catch (e) { console.error(e); }
+              try { 
+                window.__JA_busyAutofill = true;
+                pauseDetections(7000); // quiet period while we interact
+                module.autofillInit(token, data);
+                window.__JA_busyAutofill = false;
+                pauseDetections(400);  // small tail to let DOM settle 
+              } 
+              catch (e) { console.error(e); }
             } else { console.error("Autofill Init export is not found."); }
           }).catch((err) => console.error("Error importing module:", err));
         };

@@ -427,7 +427,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         try {
           const tabId = sender?.tab?.id;
           const ctx = (tabId && jobCtxByTab.get(tabId)) || null;
-          const pick = ctx?.first_canonical || ctx?.canonical || reqUrl || sender?.url || '';
+          const pick =  ctx?.first_canonical || ctx?.canonical || req.url ||  sender?.url || '';
           return canonicalJobUrl(pick);
         } catch { return canonicalJobUrl(reqUrl || sender?.url || ''); }
       }
@@ -515,13 +515,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       if (request.action === 'openPopup') {
-        /*
         if (sender.tab?.id) {
           try {
             await new Promise((resolve) => chrome.tabs.sendMessage(sender.tab.id, { action: 'forceScanNow' }, () => resolve()));
             await new Promise(r => setTimeout(r, 150));
           } catch {}
-        }*/
+        }
         chrome.action.openPopup();
         fetchDataFromBackend();
         sendResponse({ success: true, message: 'Popup opened.' });
@@ -533,13 +532,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse?.({ ok: true });
         return;
       }
-
+      /*
       if (request.action === 'getActiveJobMeta') {
         const deliver = (tid) => sendResponse?.(liActiveMetaByTab.get(tid) || null);
         if (sender.tab?.id) deliver(sender.tab.id);
         else chrome.tabs.query({ active: true, lastFocusedWindow: true }, tabs => deliver(tabs?.[0]?.id));
         return true;
-      }
+      }*/
+      /*
       if (request.action === 'classifyJobPageAdvanced') {
         const sample = request?.sample || '';
         let mlBoost = 0;
@@ -551,7 +551,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } catch { noteZSTimeout(); }
         sendResponse?.({ ok: true, mlBoost });
         return;
-      }
+      }*/
       if (request.action === 'rankJDCandidates') {
         try {
           const items = Array.isArray(request.items) ? request.items.slice(0, 6) : [];
@@ -619,28 +619,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ status: 'Job text processed.' });
         return;
       }
-     /*
-      if (request.action === 'jdText' && request.text) {
-        const work = (async () => {
-          const jdSkills = await extractSkillsHybrid(request.text);
-          const userSkillSet = await getUserSkillsSet();
-          const matchedWords = matchJDToUser(jdSkills, userSkillSet);
-          const percentage = percent(matchedWords.length, jdSkills.length);
-          if (sender.tab?.id) {
-            // 🔁 Send back to the exact frame that sent the JD (the parsing frame)
-            chrome.tabs.sendMessage(
-              sender.tab.id,
-              { action:'displayPercentage', percentage, matchedWords, allSkills: jdSkills, jobKey: request.jobKey || null },
-              { frameId: sender.frameId }
-            );
-          }
-          return true;
-        })();
-        try { await timeout(work, 2000); } catch {}
-        sendResponse({ status: 'Job text processed.' });
-        return;
-      }
-      */
       if (request.action === 'journeyStart') {
         const tabId = sender.tab?.id;
         const snap = request?.snapshot || {};
@@ -684,10 +662,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ ok: false, error: 'No canonical URL provided.' });
             return;
         }
-
         // Check the global store for the snapshot (the 'total meat')
         const snapshot = getCanonicalSnapshot(requestedCanon);
-
         if (snapshot) {
           // Return the full snapshot metadata if found
           sendResponse({ 
@@ -713,17 +689,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // Canonicalize both the submission page and the referrer
         const pageCanon = canonicalJobUrl(request.pageCanonical || sender.url || '');
         const refCanon  = canonicalJobUrl(request.referrer || '');
-  
         // Logic to select the preferred Canonical URL for primary tracking (Platform > ATS)
         //const preferCanon = (refCanon && isPlatform(refCanon)) ? refCanon : pageCanon;
         const preferCanon = (refCanon)? refCanon : pageCanon
-
         if (!tabId || !preferCanon) { sendResponse?.({ ok:false }); return; }
-
         // Retrieve the job journey bag based on the SENDER TAB ID (ATS tab)
         const bag = getBag(tabId);
         if (!bag || bag.items.size === 0) { sendResponse?.({ ok:false, error:'no-journey' }); return; }
-
         // 1. Try to bind to an existing journey in the CURRENT tab's bag
         let best = Array.from(bag.items.values()).find(j => j.status!=='submitted' && j.seen.has(preferCanon));
         if (!best && bag.activeAjid) best = bag.items.get(bag.activeAjid);
@@ -787,7 +759,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             markCanonicalSubmitted(url, when); 
             removeCanonical(url);
         }
-        
         // Build the payload using the FINAL SNAPSHOT data
         const body = {
             title: norm(finalSnapshot.title) || 'Unknown',
@@ -965,15 +936,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (iso) { sendResponse({ ok: true, applied_at: iso, canonical: reqCanon }); return; }
           }
           // 1) local instant (URL)
-          const instant = await getInstantApplied(reqCanon || request.url || '');
+          const instant = await getInstantApplied(request.url ||  '');
           if (instant) { sendResponse({ ok: true, applied_at: instant, canonical: reqCanon }); return; }
           // 2) backend fallback
           const { data } = await apiClient.get('/api/jobs', { withCredentials: true });
           const canon = (u) => canonicalJobUrlCached(u || '') || '';
-          const hit = (data || []).find(j => canon(j.url) === reqCanon) ||
+          const hit = (data || []).find(j => canon(j.url) === request.url) ||
                       (title && company ? (data || []).find(j =>
                         tclKey({title,company,location}) === tclKey({title: j.title, company: j.company, location: j.location})) : null);
-          sendResponse({ ok: true, applied_at: hit?.applied_at || null, canonical: reqCanon });
+          sendResponse({ ok: true, applied_at: hit?.applied_at || null, canonical: request.url });
         } catch (e) {
           sendResponse({ ok: false, error: e?.response?.data?.detail || e.message || 'lookup failed' });
         }
