@@ -20,6 +20,7 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
+    "build:ext": "webpack --mode production --config webpack.config.js",
     "build-webpack": "webpack --config webpack.config.js",
     "watch-webpack": "webpack --config webpack.config.js --watch",
     "test": "react-scripts test",

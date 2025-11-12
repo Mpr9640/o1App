@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: o1_db
+    environment:
+      POSTGRES_DB: app_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "9640715869"
+    ports:
+      # host:container (keeps your old 9640 port for local access if you need it)
+      - "9640:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: o1_backend
+    env_file:
+      - ./backend/.env.docker
+    environment:
+      # Force container-to-container DB URL (service name `db`)
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:9640715869@db:5432/app_db}
+      HOST: 0.0.0.0
+      PORT: 8000
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend/uploads:/app/uploads
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./info
+      dockerfile: Dockerfile
+      args:
+        # Build-time env for React
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://localhost:8000}
+    container_name: o1_frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+  # Build-only service to produce the Chrome extension /info/dist
+  extension_builder:
+    build:
+      context: ./info
+      dockerfile: Dockerfile
+      target: ext
+    container_name: o1_ext_builder
+    command: ["sh","-lc","ls -la /app/dist && tar -C /app/dist -czf /app/extension-dist.tgz . && ls -la /app/*.tgz"]
+    volumes:
+      - ./info/dist:/app/dist  # optional: if your build writes to dist/
+      - ./info/extension-artifacts:/app   # outputs extension-dist.tgz here
+
+volumes:
+  dbdata:
